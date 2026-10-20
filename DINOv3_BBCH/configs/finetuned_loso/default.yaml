@@ -1,13 +1,13 @@
 # One complete fine-tuning -> cache -> temporal LOSO experiment.
 # Copy this file and change result_root for each experiment.
 pipeline:
-  label_path: labeling_truncated3.csv
+  label_path: labeling_bbch_iso_dates.csv
   data_path: data
   result_root: results_dinov3_finetuned_loso
   image_backbone: facebook/dinov3-vitb16-pretrain-lvd1689m
-  expected_stations: 15
+  expected_stations: 16
   fold_start: 1
-  fold_end: 15
+  fold_end: 16
   validation_groups: 2
   fold_seed: 42
   seed: 42
