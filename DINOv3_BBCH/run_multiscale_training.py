@@ -974,8 +974,9 @@ def run_epoch(
     return metrics
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description="Train the multi-scale temporal wheat phenology model.")
+    parser.add_argument("--config", help="YAML training configuration. Explicit CLI flags override YAML values.")
     parser.add_argument(
         "--excel-path",
         "--label-path",
@@ -1077,7 +1078,82 @@ def main():
     parser.add_argument("--log-interval", type=int, default=25, help="Print progress every N batches. Use 0 to disable batch progress logs.")
     parser.add_argument("--checkpoint-metric", default="date_window_accuracy", help="Validation metric used for best_model.pt.")
     parser.add_argument("--checkpoint-mode", choices=["auto", "max", "min"], default="auto", help="Whether a higher or lower checkpoint metric is better. auto minimizes loss/errors and maximizes other metrics.")
-    args = parser.parse_args()
+    return parser
+
+
+def load_config_defaults(parser, path):
+    """Validate a flat YAML mapping against the existing training arguments."""
+    try:
+        import yaml
+    except ImportError:
+        parser.error("--config requires PyYAML; install DINOv3_BBCH/requirements.txt")
+
+    class UniqueKeyLoader(yaml.SafeLoader):
+        def construct_mapping(self, node, deep=False):
+            mapping = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if not isinstance(key, str):
+                    raise ValueError("configuration keys must be strings")
+                if key in mapping:
+                    raise ValueError(f"duplicate configuration key: {key}")
+                mapping[key] = self.construct_object(value_node, deep=deep)
+            return mapping
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            values = yaml.load(handle, Loader=UniqueKeyLoader)
+    except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+        parser.error(f"cannot load config {path}: {exc}")
+    if not isinstance(values, dict):
+        parser.error(f"config {path} must contain a mapping of training options")
+
+    # Use destinations for booleans: e.g. amp: false, rather than no_amp: true.
+    actions = {action.dest: action for action in parser._actions if action.dest not in {"help", "config"}}
+    defaults = {}
+    for key, value in values.items():
+        name = key.replace("-", "_")
+        if name == "label_path":
+            name = "excel_path"
+        if name not in actions:
+            parser.error(f"config {path}: unknown training option {key!r}")
+        if name in defaults:
+            parser.error(f"config {path}: duplicate training option {name!r}")
+        action = actions[name]
+        expected = action.type or (bool if isinstance(action.default, bool) else str)
+        if value is None:
+            if action.default is not None:
+                parser.error(f"config {path}: {key} cannot be null")
+        else:
+            if expected is bool:
+                valid = type(value) is bool
+            elif expected is int:
+                valid = type(value) is int
+            elif expected is float:
+                valid = type(value) in (int, float, str)
+            else:
+                valid = isinstance(value, str)
+            if not valid:
+                parser.error(f"config {path}: {key} must be {expected.__name__}")
+            try:
+                value = expected(value)
+            except (TypeError, ValueError, OverflowError):
+                parser.error(f"config {path}: invalid value for {key}: {value!r}")
+            if expected is float and not math.isfinite(value):
+                parser.error(f"config {path}: {key} must be finite")
+            if action.choices is not None and value not in action.choices:
+                parser.error(f"config {path}: {key} must be one of {list(action.choices)}")
+        defaults[name] = value
+    return defaults
+
+
+def parse_args(argv=None):
+    parser = build_parser()
+    # Discover the config first, then parse again with YAML-backed defaults.
+    config_args, _ = parser.parse_known_args(argv)
+    if config_args.config:
+        parser.set_defaults(**load_config_defaults(parser, config_args.config))
+    args = parser.parse_args(argv)
 
     if not 0.0 <= args.ordinal_ce_weight <= 1.0:
         parser.error("--ordinal-ce-weight must be in [0, 1]")
@@ -1095,6 +1171,12 @@ def main():
         parser.error("--monotonic-advance-penalty must be non-negative")
     if args.monotonic_decoding != "none" and not args.exclude_offseason:
         parser.error("--monotonic-decoding requires --exclude-offseason because OffSeason occurs both before sowing and after harvest")
+
+    return args
+
+
+def main():
+    args = parse_args()
 
     start_time = time.time()
     os.makedirs(args.out_dir, exist_ok=True)

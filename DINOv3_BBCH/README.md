@@ -100,55 +100,39 @@ features require `--tile-pooling attention`.
 
 ## Train
 
+The main training entry point accepts a flat YAML configuration. Start with
+[`configs/train.yaml`](configs/train.yaml) (the settings below) or
+[`configs/train_loso.yaml`](configs/train_loso.yaml) for LOSO, and edit the values
+for your experiment. Install dependencies with
+`pip install -r DINOv3_BBCH/requirements.txt`.
+
+Precedence is built-in defaults, then YAML, then explicit CLI flags. Existing
+CLI-only commands still work. Any training option can be written using its
+argument destination with underscores (or hyphens); `label_path` is an alias for
+`excel_path`. Set booleans directly, such as `amp: false`, `tensorboard: false`,
+or `use_days_since_planting: false`. Omitted options retain their existing
+defaults. Use `null` only for optional values whose default is `None`, such as
+`embedding_cache` or `resume_checkpoint`. Unknown keys, duplicate options,
+invalid types, and invalid choices fail before training starts.
+
+All paths, including paths inside YAML, are relative to the current working
+directory, just like CLI paths. Run these commands from the repository root.
+For a one-off override:
+
+```bash
+python DINOv3_BBCH/run_multiscale_training.py --config DINOv3_BBCH/configs/train.yaml --epochs 10 --no-amp
+```
+
+Configuration support applies to `run_multiscale_training.py`; preprocessing,
+backbone fine-tuning, inference, and orchestration scripts retain their current
+interfaces.
+
 This command keeps the strongest conservative settings from the previous
 pipeline while isolating the DINOv3 image representation. Weather is omitted
 from the first comparison so the backbone test is easier to interpret.
 
 ```bash
-python DINOv3_BBCH/run_multiscale_training.py \
-  --label-path labeling_bbch_iso_dates.csv \
-  --data-path data \
-  --out-dir results_dinov3_bbch \
-  --embedding-cache results_dinov3_bbch_cache/vit_embeddings.pt \
-  --epochs 30 \
-  --folds 8 \
-  --fold-group-by station \
-  --validation-groups 2 \
-  --test-groups 2 \
-  --fold-seed 42 \
-  --seed 42 \
-  --window-days 31 \
-  --window-mode causal \
-  --min-train-stage-days 8 \
-  --min-train-window-coverage-days 12 \
-  --stream micro \
-  --camera AUTO \
-  --batch-size 16 \
-  --accumulation-steps 2 \
-  --num-workers 4 \
-  --temporal-model transformer \
-  --temporal-aggregation cls \
-  --temporal-layers 2 \
-  --temporal-heads 8 \
-  --temporal-norm-first \
-  --temporal-ffn-multiplier 2 \
-  --loss hybrid \
-  --ordinal-ce-weight 0.5 \
-  --checkpoint-metric macro_f1 \
-  --dropout 0.2 \
-  --weight-decay 3e-4 \
-  --lr 1e-4 \
-  --lr-scheduler cosine \
-  --warmup-ratio 0.05 \
-  --use-days-since-planting \
-  --temporal-feature-fusion legacy \
-  --use-location-metadata \
-  --location-feature-hidden-dim 16 \
-  --location-gate-init 0.1 \
-  --exclude-offseason \
-  --monotonic-decoding none \
-  --device cuda \
-  --log-interval 50
+python DINOv3_BBCH/run_multiscale_training.py --config DINOv3_BBCH/configs/train.yaml
 ```
 
 ### Leave-one-station-out evaluation
@@ -160,39 +144,7 @@ exactly twice. `--fold-seed` changes the balanced validation rotation and fold
 order; it does not change which stations are eventually tested.
 
 ```bash
-python DINOv3_BBCH/run_multiscale_training.py \
-  --label-path labeling_truncated2.csv \
-  --data-path data \
-  --out-dir results_dinov3_bbch_loso \
-  --embedding-cache results_dinov3_bbch/vit_embeddings.pt \
-  --fold-strategy loso \
-  --fold-group-by station \
-  --expected-stations 15 \
-  --validation-groups 2 \
-  --test-groups 1 \
-  --fold-seed 42 \
-  --epochs 20 \
-  --window-days 21 \
-  --window-mode causal \
-  --date-tolerance-days 5 \
-  --min-train-stage-days 8 \
-  --min-train-window-coverage-days 12 \
-  --stream micro \
-  --batch-size 32 \
-  --temporal-model transformer \
-  --temporal-aggregation cls \
-  --temporal-layers 2 \
-  --temporal-heads 8 \
-  --loss hybrid \
-  --ordinal-ce-weight 0.5 \
-  --checkpoint-metric macro_f1 \
-  --dropout 0.2 \
-  --weight-decay 3e-4 \
-  --use-days-since-planting \
-  --temporal-feature-fusion gated \
-  --use-location-metadata \
-  --exclude-offseason \
-  --device cuda
+python DINOv3_BBCH/run_multiscale_training.py --config DINOv3_BBCH/configs/train_loso.yaml
 ```
 
 LOSO uses all station codes present in the generated metadata, regardless of
@@ -395,55 +347,71 @@ experiments do not indirectly tune against held-out stations.
 
 ### Automated LOSO runner
 
-The complete three-stage loop is available as:
+The shell runner reads complete experiment YAML files from a config folder and
+retains the full fine-tuning → dense cache → temporal LOSO workflow. Start with
+[`configs/finetuned_loso/default.yaml`](configs/finetuned_loso/default.yaml).
+This folder contains pipeline configs; the flat `configs/train*.yaml` files
+are for the main training entry point only.
 
 ```bash
+# Run all YAML files in the default pipeline config folder, sequentially.
 bash DINOv3_BBCH/run_finetuned_loso.sh
+
+# Select configs by filename or stem, keeping their specified order.
+bash DINOv3_BBCH/run_finetuned_loso.sh --configs default experiment_b
+
+# Select two configs and run up to two complete experiments concurrently.
+bash DINOv3_BBCH/run_finetuned_loso.sh --config-dir DINOv3_BBCH/configs/finetuned_loso --configs default experiment_b --parallel 2
+
+# Preview all stage commands and generated training YAML without running them.
+bash DINOv3_BBCH/run_finetuned_loso.sh --configs default --dry-run
 ```
 
-The runner performs an authenticated Hugging Face access check before fold 1.
-For the gated Meta checkpoint, first accept the conditions on the
-`facebook/dinov3-vitb16-pretrain-lvd1689m` model page. Then verify that the same
-Linux account running the script can see its token:
+Create `experiment_b.yaml` by copying `default.yaml`. Each config has four
+sections:
 
-```bash
-hf auth whoami
-python3 -c "from huggingface_hub import get_token, whoami; t=get_token(); print('token visible:', bool(t)); print(whoami(token=t)['name'] if t else 'none')"
-env | grep -E '^HF_(TOKEN|HOME|TOKEN_PATH|HUB_OFFLINE|HUB_DISABLE_IMPLICIT_TOKEN)=' || true
-```
+- `pipeline`: labels, data, result root, backbone, fold range, station count,
+  split seeds, stream, camera, GPU, and cache retention.
+- `finetune`: image-backbone fine-tuning parameters.
+- `precompute`: dense embedding cache parameters.
+- `training`: temporal training parameters, using the main trainer's YAML keys.
 
-A stale `HF_TOKEN` environment variable takes priority over the saved login.
-Unset it and log in again, or deliberately export the active token. A local
-download avoids network authentication during the long run:
+Give each experiment a separate `pipeline.result_root`. The runner rejects
+identical or overlapping result directories. Set `pipeline.gpu_id` per config
+(for example, `0` and `1` for two GPUs); the selected physical GPU becomes
+`cuda:0` inside that experiment. Configs sharing a GPU also share its memory.
+The default is one experiment at a time, and folds within each experiment
+always run sequentially. Omitting `--configs` selects all `.yaml` and `.yml`
+files directly inside `--config-dir`, sorted by filename.
 
-```bash
-hf download facebook/dinov3-vitb16-pretrain-lvd1689m \
-  --local-dir models/dinov3-vitb16
+Paths inside YAML are relative to the repository root. All experiment settings
+now come from YAML, replacing the shell runner's previous environment overrides;
+`PYTHON` can still select the interpreter. For example, edit
+`pipeline.fold_start` and `pipeline.fold_end` for a fold subset,
+`pipeline.keep_caches: true` to retain caches, or `pipeline.image_backbone` to
+use a downloaded local checkpoint. Shared split settings and fold-specific
+backbone/cache/output paths are managed by the runner and cannot be overridden
+inside individual stage sections.
 
-IMAGE_BACKBONE=models/dinov3-vitb16 \
-  bash DINOv3_BBCH/run_finetuned_loso.sh
-```
+The runner checks Hugging Face access before training. For the gated Meta
+checkpoint, accept its model conditions and run `hf auth login` with the same
+Linux account and Python environment, or provide `HF_TOKEN`. A stale `HF_TOKEN`
+can override a saved login. A local backbone directory must contain
+`config.json`.
 
-It defaults to `labeling_truncated3.csv`, folds 1 through 15, and removes each
-large dense cache only after that fold produces final temporal test metrics.
-Fine-tuned backbones, temporal checkpoints, predictions, and metrics remain.
-The runner skips completed stages and resumes an interrupted temporal stage.
+Each result root contains `pipeline.log` for stage output and `pipeline.yaml`
+for the resolved experiment settings. Each temporal fold also records its
+resolved `training.yaml`. The runner skips completed stages and resumes
+`last_checkpoint.pt`. It refuses to reuse a result root whose saved pipeline
+settings differ; choose a new result root when changing an experiment.
+Failed experiments are reported with their log paths, other selected configs
+continue, and the runner returns a nonzero exit status if any experiment fails.
 
-Useful environment overrides:
-
-```bash
-# Smoke-test one fold and retain its cache for inspection.
-FOLD_START=1 FOLD_END=1 KEEP_CACHES=1 \
-  bash DINOv3_BBCH/run_finetuned_loso.sh
-
-# Continue folds 6 through 15 with a different result root.
-FOLD_START=6 FOLD_END=15 RESULT_ROOT=results_dinov3_finetuned_loso_v2 \
-  bash DINOv3_BBCH/run_finetuned_loso.sh
-```
-
-After the requested range completes, combined CSVs, confusion counts, and a
-JSON summary are written under
-`results_dinov3_finetuned_loso/temporal/aggregate`.
+Caches are removed only after the corresponding fold produces final test
+metrics, unless `pipeline.keep_caches` is true. Backbones, temporal checkpoints,
+predictions, and metrics remain. Combined CSVs, confusion counts, and summary
+JSON files are written under `<result_root>/temporal/aggregate` independently
+for each experiment. The PowerShell runner retains its existing interface.
 
 Dense cache tensors consume more host RAM and batch-transfer bandwidth than the
 old tile cache. `batch-size 16` with accumulation 2 preserves an effective batch

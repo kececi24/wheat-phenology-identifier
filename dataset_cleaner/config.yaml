@@ -19,15 +19,15 @@ data:
     - "27.02/2017/K1/10X"
     - "27.03/2014/K1/1X"
     - "27.03/2014/K1/10X"
-  validation_fraction: 0.2
-  split_seed: 42
+  folds: 3
 
 model:
   name: "facebook/deit-tiny-patch16-224"
   freeze_backbone: true
 
 training:
-  epochs: 1
+  epochs: 2
+  patience: 3
   batch_size: 32
   learning_rate: 0.001
   weight_decay: 0.01
