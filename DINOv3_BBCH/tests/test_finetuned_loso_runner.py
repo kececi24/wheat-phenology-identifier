@@ -60,6 +60,23 @@ class FinetunedLOSORunnerTests(unittest.TestCase):
             self.assertEqual(runner.main(["--config-dir", str(self.directory), "--parallel", "2"]), 1)
             batch.assert_not_called()
 
+    def test_can_enable_epoch_jsonl_on_resume_without_changing_training_settings(self):
+        root = Path(self.config["pipeline"]["result_root"])
+        root.mkdir()
+        old_config = copy.deepcopy(self.config)
+        old_config["training"].pop("epoch_jsonl", None)
+        (root / "pipeline.yaml").write_text(yaml.safe_dump(old_config), encoding="utf-8")
+        self.config["training"]["epoch_jsonl"] = True
+        self.write_config("first", self.config)
+        with patch.object(runner, "run_batch", return_value=False) as batch:
+            self.assertEqual(runner.main(["--config-dir", str(self.directory), "--configs", "first"]), 0)
+            batch.assert_called_once()
+        self.config["training"]["epochs"] += 1
+        self.write_config("first", self.config)
+        with patch.object(runner, "run_batch") as batch, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(runner.main(["--config-dir", str(self.directory), "--configs", "first"]), 1)
+            batch.assert_not_called()
+
     def test_builds_fold_safe_commands_and_resumes_checkpoint(self):
         commands, training, config_path, backbone, cache, run = runner.fold_commands(self.config, 3)
         self.assertEqual(commands[0][commands[0].index("--fold-id") + 1], "3")

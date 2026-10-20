@@ -31,3 +31,5 @@ temporal_feature_fusion: gated
 use_location_metadata: false
 exclude_offseason: true
 device: cuda
+# Set true to write fold_<n>/epochs.jsonl after each epoch.
+epoch_jsonl: false

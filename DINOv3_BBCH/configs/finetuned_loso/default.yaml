@@ -81,3 +81,5 @@ training:
   location_gate_init: 0.1
   monotonic_decoding: none
   log_interval: 50
+  # Set true for per-epoch metrics in each temporal fold's epochs.jsonl.
+  epoch_jsonl: false

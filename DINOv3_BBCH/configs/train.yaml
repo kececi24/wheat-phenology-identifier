@@ -42,3 +42,5 @@ exclude_offseason: true
 monotonic_decoding: none
 device: cuda
 log_interval: 50
+# Set true to write fold_<n>/epochs.jsonl after each epoch.
+epoch_jsonl: false

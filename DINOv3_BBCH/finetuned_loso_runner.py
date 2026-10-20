@@ -275,6 +275,12 @@ def run_batch(experiments, parallel):
     return bool(failed)
 
 
+def resume_settings(config):
+    """JSONL logging can change on resume without changing the experiment."""
+    return {**config, "training": {key: value for key, value in config["training"].items()
+                                   if key != "epoch_jsonl"}}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-dir", type=Path, default=SCRIPT_DIR / "configs" / "finetuned_loso")
@@ -296,7 +302,7 @@ def main(argv=None):
             if any(root == other or root in other.parents or other in root.parents for other in roots[:index]):
                 raise ValueError("Selected configs must have separate, non-overlapping result_root directories")
             snapshot = root / "pipeline.yaml"
-            if snapshot.is_file() and load_experiment(snapshot) != experiments[index][1]:
+            if snapshot.is_file() and resume_settings(load_experiment(snapshot)) != resume_settings(experiments[index][1]):
                 raise ValueError(f"{root}: existing pipeline settings differ; choose a new result_root")
         if args.dry_run:
             for path, config in experiments:

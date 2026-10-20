@@ -128,6 +128,39 @@ def compact_epoch_metrics(row: Dict) -> Dict:
     return {key: row.get(key) for key in BRIEF_HISTORY_COLUMNS if key in row}
 
 
+def epoch_json_line(row: Dict) -> str:
+    # Missing/non-finite metrics must remain valid JSON for downstream readers.
+    values = {
+        key: None if isinstance(value, float) and not math.isfinite(value) else value
+        for key, value in row.items()
+    }
+    return json.dumps(values, allow_nan=False) + "\n"
+
+
+def initialize_epoch_jsonl(path: Optional[str], history) -> None:
+    if path is None:
+        return
+    # Checkpoint history is authoritative: remove any uncheckpointed epochs on
+    # resume, and backfill history if logging was enabled after a previous run.
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        for row in history:
+            handle.write(epoch_json_line(row))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, path)
+
+
+def append_epoch_jsonl(path: Optional[str], row: Dict) -> None:
+    if path is None:
+        return
+    line = epoch_json_line(row)
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def log_tb_metrics(writer, prefix: str, metrics: Dict[str, float], step: int):
     if writer is None:
         return
@@ -1071,6 +1104,8 @@ def build_parser():
     parser.add_argument("--no-fused-optimizer", dest="fused_optimizer", action="store_false", help="Disable fused AdamW.")
     parser.add_argument("--tensorboard", dest="tensorboard", action="store_true", default=True, help="Write TensorBoard event logs.")
     parser.add_argument("--no-tensorboard", dest="tensorboard", action="store_false", help="Disable TensorBoard logging.")
+    parser.add_argument("--epoch-jsonl", action="store_true", help="Write each completed epoch to <out-dir>/fold_<n>/epochs.jsonl.")
+    parser.add_argument("--no-epoch-jsonl", dest="epoch_jsonl", action="store_false", help="Disable per-epoch JSONL logging (default).")
     parser.add_argument("--tensorboard-dir", default=None, help="TensorBoard log directory. Defaults to <out-dir>/tensorboard.")
     parser.add_argument("--resume-checkpoint", default=None, help="Resume training from a last_checkpoint.pt file.")
     parser.add_argument("--save-last-checkpoint", dest="save_last_checkpoint", action="store_true", default=True, help="Save resumable last_checkpoint.pt after every epoch.")
@@ -1902,6 +1937,11 @@ def main():
             if start_epoch > args.epochs:
                 log(f"Fold {fold_id}: resume checkpoint already completed requested epochs; moving to final test")
 
+        epoch_log_path = os.path.join(fold_dir, "epochs.jsonl") if args.epoch_jsonl else None
+        initialize_epoch_jsonl(epoch_log_path, history)
+        if epoch_log_path is not None:
+            log(f"Fold {fold_id}: per-epoch JSONL logging enabled: {epoch_log_path}")
+
         for epoch in range(start_epoch, args.epochs + 1):
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
@@ -1941,6 +1981,7 @@ def main():
             row = {
                 "fold": fold_id,
                 "epoch": epoch,
+                "lr": optimizer.param_groups[0]["lr"],
                 **{f"train_{k}": v for k, v in train_metrics.items()},
                 **{f"val_{k}": v for k, v in val_metrics.items()},
             }
@@ -1951,6 +1992,7 @@ def main():
             row.update(learned_metadata_gates)
             history.append(row)
             all_history.append(row)
+            append_epoch_jsonl(epoch_log_path, row)
             log("Epoch accuracies: " + json.dumps(compact_epoch_metrics(row), indent=None))
             log_tb_metrics(tb_writer, f"fold_{fold_id}/train", train_metrics, epoch)
             log_tb_metrics(tb_writer, f"fold_{fold_id}/val", val_metrics, epoch)

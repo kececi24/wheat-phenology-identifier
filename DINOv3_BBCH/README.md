@@ -127,6 +127,35 @@ Configuration support applies to `run_multiscale_training.py`; preprocessing,
 backbone fine-tuning, inference, and orchestration scripts retain their current
 interfaces.
 
+### Per-epoch JSONL logging
+
+The main trainer already prints epoch summaries, writes TensorBoard metrics when
+enabled, and saves CSV histories after each fold. To also save metrics immediately
+after each epoch's training and validation finish, set this in a flat training YAML:
+
+```yaml
+epoch_jsonl: true
+```
+
+For the full fine-tuned LOSO runner, place the option in the `training` section:
+
+```yaml
+training:
+  epoch_jsonl: true
+```
+
+Logging defaults to false. CLI overrides are `--epoch-jsonl` and
+`--no-epoch-jsonl` on the main training entry point. Each fold writes
+`<out-dir>/fold_<n>/epochs.jsonl`; the full LOSO runner writes it under
+`<result_root>/temporal/run_fold_<n>/fold_<n>/epochs.jsonl`. Each line contains
+the fold, epoch, learning rate (`lr`), all train/validation metrics, and any
+learned metadata gates. Missing or non-finite metrics are recorded as JSON `null`.
+The file is flushed and synced after every epoch. On resume it is rebuilt from
+checkpoint history before new epochs are appended, removing any uncheckpointed
+epoch records. Enabling logging on a resumed run also backfills checkpoint
+history; older checkpoints may lack the newly recorded `lr` field. A fresh run
+starts a new log. This option applies to temporal training epochs.
+
 This command keeps the strongest conservative settings from the previous
 pipeline while isolating the DINOv3 image representation. Weather is omitted
 from the first comparison so the backbone test is easier to interpret.
@@ -404,6 +433,7 @@ for the resolved experiment settings. Each temporal fold also records its
 resolved `training.yaml`. The runner skips completed stages and resumes
 `last_checkpoint.pt`. It refuses to reuse a result root whose saved pipeline
 settings differ; choose a new result root when changing an experiment.
+The `training.epoch_jsonl` logging toggle can change when resuming the same run.
 Failed experiments are reported with their log paths, other selected configs
 continue, and the runner returns a nonzero exit status if any experiment fails.
 
