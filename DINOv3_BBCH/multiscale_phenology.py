@@ -137,6 +137,9 @@ STATION_COORDINATES = {
     "02": (37.76, 38.2761), # Adıyaman
     "06": (39.9288, 32.8547), # Ankara
     "11": (40.150, 29.983), # Bilecik
+    "17": (40.1506, 26.4111), # Çanakkale
+    "18": (40.6000, 33.6167), # Çankırı
+    "21": (37.9108, 40.2367), # Diyarbakır
     "26": (39.7713, 30.5183), # Eskişehir
     "27": (37.0658, 37.3780) # Gaziantep
 }
@@ -146,6 +149,9 @@ STATION_ELEVATIONS = { # average, by meters
     "02": 669, # Adıyaman
     "06": 938, # Ankara
     "11": 513, # Bilecik
+    "17": 2, # Çanakkale
+    "18": 720, # Çankırı
+    "21": 650, # Diyarbakır
     "26": 792, # Eskişehir
     "27": 838 # Gaziantep
 }
