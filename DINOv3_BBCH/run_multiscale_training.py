@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
+import torch.distributed as dist
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -45,6 +46,10 @@ from multiscale_phenology import (
     print_station_image_edges,
 )
 
+from distributed_runtime import (
+    initialize_distributed,
+    make_train_sampler
+)
 
 # Edit these values to change the fold split for DINOv3 experiments.
 # Training groups are derived automatically:
@@ -373,10 +378,11 @@ def build_scheduler(optimizer, args, steps_per_epoch: int):
     return scheduler, total_steps, warmup_steps
 
 
-def build_loader(dataset, args, device, shuffle: bool, drop_last: bool = False, seed: Optional[int] = None):
+def build_loader(dataset, args, device, shuffle: bool, drop_last: bool = False, seed: Optional[int] = None, sampler = None):
     kwargs = {
         "batch_size": args.batch_size,
-        "shuffle": shuffle,
+        "shuffle": shuffle if sampler is None else False,
+        "sampler": sampler,
         "num_workers": args.num_workers,
         "pin_memory": args.pin_memory and device.type == "cuda",
         "drop_last": drop_last,
@@ -997,6 +1003,40 @@ def run_epoch(
                 msg += f" max_vram={mem:.2f}GB"
             log(msg)
 
+    distributed_training = train and dist.is_available() and dist.is_initialized()
+
+    if distributed_training:
+        totals = torch.tensor(
+            [
+                total_loss,
+                total_correct,
+                total_neighbor,
+                total_date_score,
+                total
+            ],
+            dtype=torch.float64,
+            device=device
+        )
+
+        dist.all_reduce(totals, op=dist.ReduceOp.SUM)
+        (
+            total_loss,
+            total_correct,
+            total_neighbor,
+            total_date_score,
+            total
+        ) = totals.tolist()
+
+        gathered_indices = [None] * dist.get_world_size()
+
+        dist.all_gather_object(
+            gathered_indices,
+            (all_true_indices, all_pred_indices)
+        )
+
+        all_true_indices = [index for true_indices, _ in gathered_indices for index in true_indices]
+        all_pred_indices = [index for _, pred_indices in gathered_indices for index in pred_indices]
+
     metrics = {
         "loss": total_loss / max(total, 1),
         "accuracy": total_correct / max(total, 1),
@@ -1215,10 +1255,11 @@ def main():
 
     start_time = time.time()
     os.makedirs(args.out_dir, exist_ok=True)
-    device = torch.device(args.device)
+    device, rank, world_size = initialize_distributed()
+    is_main_process = rank == 0
     configure_runtime(device)
     seed_everything(args.seed)
-    effective_batch = args.batch_size * max(1, args.accumulation_steps)
+    effective_batch = args.batch_size * max(1, args.accumulation_steps) * world_size
     log("Starting multi-scale phenology training")
     log(f"Working directory: {os.getcwd()}")
     log(f"Arguments: {json.dumps(vars(args), default=str)}")
@@ -1389,7 +1430,7 @@ def main():
         log(f"Resume target: fold={resume_fold_id} completed_epoch={resume_completed_epoch}")
     tb_writer = None
     tb_log_dir = args.tensorboard_dir or os.path.join(args.out_dir, "tensorboard")
-    if args.tensorboard:
+    if args.tensorboard and is_main_process:
         if SummaryWriter is None:
             log("TensorBoard logging requested, but tensorboard is not installed. Run: python -m pip install tensorboard")
         else:
@@ -1468,12 +1509,19 @@ def main():
     if args.use_weather_metadata:
         weather_cache = args.weather_cache or os.path.join(args.out_dir, "meteostat_weather_cache.csv")
         log(f"Adding Meteostat weather metadata using cache: {weather_cache}")
-        daily_df = add_weather_metadata(
-            daily_df,
-            weather_cache,
-            force_refresh=args.weather_force_refresh,
-            gdd_base_temp=args.gdd_base_temp,
-        )
+        # Weather enrichment may write its shared cache. Only rank 0 fetches or
+        # refreshes it; all ranks then receive the same enriched metadata.
+        if is_main_process:
+            daily_df = add_weather_metadata(
+                daily_df,
+                weather_cache,
+                force_refresh=args.weather_force_refresh,
+                gdd_base_temp=args.gdd_base_temp,
+            )
+        if world_size > 1:
+            weather_frames = [daily_df if is_main_process else None]
+            dist.broadcast_object_list(weather_frames, src=0)
+            daily_df = weather_frames[0]
         if "weather_gdd_cum_raw" in daily_df.columns:
             gdd_stats = daily_df["weather_gdd_cum_raw"].describe()[["min", "mean", "max"]]
             log(
@@ -1526,7 +1574,8 @@ def main():
         log_tb_text(tb_writer, "config/location_feature_columns", {"columns": list(location_feature_columns)})
 
     meta_path = os.path.join(args.out_dir, "multiscale_daily_metadata.csv")
-    daily_df.to_csv(meta_path, index=False)
+    if is_main_process:
+        daily_df.to_csv(meta_path, index=False)
     log(f"Saved metadata: {meta_path}")
     log(f"Metadata rows: {len(daily_df)}")
     log(f"Station-years: {daily_df['station_year'].nunique()} | Groups: {daily_df['group_id'].nunique()}")
@@ -1643,8 +1692,10 @@ def main():
                     }
                 )
     fold_assignment_path = os.path.join(args.out_dir, "fold_assignments.csv")
-    pd.DataFrame(fold_assignment_rows).to_csv(fold_assignment_path, index=False)
+    if is_main_process:
+        pd.DataFrame(fold_assignment_rows).to_csv(fold_assignment_path, index=False)
     log(f"Saved fold assignments: {fold_assignment_path}")
+
     if resume_fold_id is not None and not (1 <= resume_fold_id <= len(folds)):
         raise ValueError(f"Resume checkpoint fold_id={resume_fold_id} is outside generated fold range 1..{len(folds)}")
     if args.only_fold is not None and not (1 <= args.only_fold <= len(folds)):
@@ -1772,8 +1823,10 @@ def main():
             "test_groups": sorted(test_df[split_group_col].unique().tolist()),
         }
         split_info_path = os.path.join(fold_dir, "split_info.json")
-        with open(split_info_path, "w", encoding="utf-8") as f:
-            json.dump(split_info, f, indent=2)
+        if is_main_process:
+            with open(split_info_path, "w", encoding="utf-8") as f:
+                json.dump(split_info, f, indent=2)
+
         log_tb_text(tb_writer, f"fold_{fold_id}/split", split_info)
         if tb_writer is not None:
             tb_writer.add_scalar(f"fold_{fold_id}/split/train_rows", len(train_df), 0)
@@ -1817,8 +1870,9 @@ def main():
                     seed=args.smote_seed + fold_id,
                 )
                 smote_summary_path = os.path.join(fold_dir, "smote_summary.json")
-                with open(smote_summary_path, "w", encoding="utf-8") as f:
-                    json.dump(train_ds.summary, f, indent=2)
+                if is_main_process:
+                    with open(smote_summary_path, "w", encoding="utf-8") as f:
+                        json.dump(train_ds.summary, f, indent=2)
                 log(
                     f"Fold {fold_id}: SMOTE added {train_ds.summary['synthetic_samples']} synthetic windows "
                     f"({train_ds.summary['original_samples']} real -> {train_ds.summary['total_samples']} total); "
@@ -1842,8 +1896,9 @@ def main():
             {},
         )
         coverage_filter_path = os.path.join(fold_dir, "training_coverage_filter.json")
-        with open(coverage_filter_path, "w", encoding="utf-8") as f:
-            json.dump(coverage_filter_summary, f, indent=2)
+        if is_main_process:
+            with open(coverage_filter_path, "w", encoding="utf-8") as f:
+                json.dump(coverage_filter_summary, f, indent=2)
         log(
             f"Fold {fold_id}: training coverage filter kept="
             f"{coverage_filter_summary.get('kept_samples', len(train_ds))} "
@@ -1860,7 +1915,14 @@ def main():
                 f"(train={len(train_ds)}, val={len(val_ds)}, test={test_samples})."
             )
 
-        train_loader = build_loader(train_ds, args, device, shuffle=True, drop_last=args.drop_last, seed=fold_seed)
+        train_sampler = make_train_sampler(
+            train_ds,
+            rank=rank,
+            world_size=world_size,
+            seed=fold_seed
+        )
+        train_loader = build_loader(train_ds, args, device, shuffle=True, drop_last=args.drop_last, seed=fold_seed, sampler=train_sampler)
+
         val_loader = build_loader(val_ds, args, device, shuffle=False, seed=fold_seed + 10_000)
         test_loader = build_loader(test_ds, args, device, shuffle=False, seed=fold_seed + 20_000) if test_ds is not None else None
         log(
@@ -1937,7 +1999,7 @@ def main():
             if start_epoch > args.epochs:
                 log(f"Fold {fold_id}: resume checkpoint already completed requested epochs; moving to final test")
 
-        epoch_log_path = os.path.join(fold_dir, "epochs.jsonl") if args.epoch_jsonl else None
+        epoch_log_path = os.path.join(fold_dir, "epochs.jsonl") if args.epoch_jsonl and is_main_process else None
         initialize_epoch_jsonl(epoch_log_path, history)
         if epoch_log_path is not None:
             log(f"Fold {fold_id}: per-epoch JSONL logging enabled: {epoch_log_path}")
@@ -1946,6 +2008,10 @@ def main():
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
             log(f"Fold {fold_id} epoch {epoch}/{args.epochs}: training started")
+
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+
             train_metrics = run_epoch(
                 model,
                 train_loader,
@@ -2214,8 +2280,9 @@ def main():
                 )
         all_val_metrics.append(best_val_row)
         val_metrics_path = os.path.join(fold_dir, "val_metrics.json")
-        with open(val_metrics_path, "w", encoding="utf-8") as f:
-            json.dump(best_val_row, f, indent=2)
+        if is_main_process:
+            with open(val_metrics_path, "w", encoding="utf-8") as f:
+                json.dump(best_val_row, f, indent=2)
 
         log(f"Fold {fold_id}: loading best checkpoint from epoch {best_epoch} for coverage evaluation")
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -2225,12 +2292,14 @@ def main():
         best_location_gate = location_gate_value(model)
         if best_location_gate is not None:
             best_val_row["location_gate"] = best_location_gate
-            with open(val_metrics_path, "w", encoding="utf-8") as f:
-                json.dump(best_val_row, f, indent=2)
+            if is_main_process:
+                with open(val_metrics_path, "w", encoding="utf-8") as f:
+                    json.dump(best_val_row, f, indent=2)
             log(f"Fold {fold_id}: learned location gate at best epoch={best_location_gate:.4f}")
         if best_metadata_gates:
-            with open(val_metrics_path, "w", encoding="utf-8") as f:
-                json.dump(best_val_row, f, indent=2)
+            if is_main_process:
+                with open(val_metrics_path, "w", encoding="utf-8") as f:
+                    json.dump(best_val_row, f, indent=2)
             log(
                 f"Fold {fold_id}: learned metadata gates at best epoch="
                 + ", ".join(f"{name}={value:.4f}" for name, value in best_metadata_gates.items())
@@ -2262,32 +2331,34 @@ def main():
             decoded_val_predictions = decoded_prediction_view(fold_val_predictions)
             decoded_val_metrics = prediction_summary_from_rows(decoded_val_predictions, active_classes)
             best_val_row.update({f"monotonic_val_{key}": value for key, value in decoded_val_metrics.items()})
-            with open(val_metrics_path, "w", encoding="utf-8") as f:
-                json.dump(best_val_row, f, indent=2)
-            save_confusion_matrix(decoded_val_predictions, fold_dir, "val_monotonic", active_classes)
-            save_classification_metrics(decoded_val_predictions, fold_dir, "val_monotonic", active_classes)
+            if is_main_process:
+                with open(val_metrics_path, "w", encoding="utf-8") as f:
+                    json.dump(best_val_row, f, indent=2)
+                save_confusion_matrix(decoded_val_predictions, fold_dir, "val_monotonic", active_classes)
+                save_classification_metrics(decoded_val_predictions, fold_dir, "val_monotonic", active_classes)
+                save_coverage_stratified_metrics(
+                    decoded_val_predictions,
+                    fold_dir,
+                    "val_monotonic",
+                    active_classes,
+                    window_days=args.window_days,
+                    min_stage_support_days=args.min_train_stage_days,
+                    min_window_coverage_days=args.min_train_window_coverage_days,
+                )
+            log_tb_metrics(tb_writer, f"fold_{fold_id}/val_monotonic", decoded_val_metrics, best_epoch or args.epochs)
+        all_val_predictions.extend(fold_val_predictions)
+        val_predictions_path = os.path.join(fold_dir, "val_predictions.csv")
+        if is_main_process:
+            pd.DataFrame(fold_val_predictions).to_csv(val_predictions_path, index=False)
             save_coverage_stratified_metrics(
-                decoded_val_predictions,
+                fold_val_predictions,
                 fold_dir,
-                "val_monotonic",
+                "val",
                 active_classes,
                 window_days=args.window_days,
                 min_stage_support_days=args.min_train_stage_days,
                 min_window_coverage_days=args.min_train_window_coverage_days,
             )
-            log_tb_metrics(tb_writer, f"fold_{fold_id}/val_monotonic", decoded_val_metrics, best_epoch or args.epochs)
-        all_val_predictions.extend(fold_val_predictions)
-        val_predictions_path = os.path.join(fold_dir, "val_predictions.csv")
-        pd.DataFrame(fold_val_predictions).to_csv(val_predictions_path, index=False)
-        save_coverage_stratified_metrics(
-            fold_val_predictions,
-            fold_dir,
-            "val",
-            active_classes,
-            window_days=args.window_days,
-            min_stage_support_days=args.min_train_stage_days,
-            min_window_coverage_days=args.min_train_window_coverage_days,
-        )
 
         if test_loader is None:
             log(f"Fold {fold_id}: no test groups requested; skipping final test evaluation")
@@ -2302,10 +2373,12 @@ def main():
             test_row.update(best_metadata_gates)
             all_test_metrics.append(test_row)
             history_path = os.path.join(fold_dir, "history.csv")
-            pd.DataFrame(history).to_csv(history_path, index=False)
+            if is_main_process:
+                pd.DataFrame(history).to_csv(history_path, index=False)
             log(f"Fold {fold_id}: saved history to {history_path}")
             brief_history_path = os.path.join(fold_dir, "brief_history.csv")
-            brief_history_frame(history).to_csv(brief_history_path, index=False)
+            if is_main_process:
+                brief_history_frame(history).to_csv(brief_history_path, index=False)
             log(f"Fold {fold_id}: saved brief history to {brief_history_path}")
             continue
 
@@ -2358,109 +2431,125 @@ def main():
                 if isinstance(metric_value, (int, float)):
                     tb_writer.add_scalar(f"cv/test/{metric_name}", metric_value, fold_id)
         test_metrics_path = os.path.join(fold_dir, "test_metrics.json")
-        with open(test_metrics_path, "w", encoding="utf-8") as f:
-            json.dump(test_row, f, indent=2)
+        if is_main_process:
+            with open(test_metrics_path, "w", encoding="utf-8") as f:
+                json.dump(test_row, f, indent=2)
         log(f"Fold {fold_id}: final held-out test metrics saved to {test_metrics_path}")
         log("Final test metrics: " + json.dumps(test_row, indent=None))
         test_predictions_path = os.path.join(fold_dir, "test_predictions.csv")
-        pd.DataFrame(fold_test_predictions).to_csv(test_predictions_path, index=False)
+        if is_main_process:
+            pd.DataFrame(fold_test_predictions).to_csv(test_predictions_path, index=False)
         log(f"Fold {fold_id}: final held-out test predictions saved to {test_predictions_path}")
-        save_confusion_matrix(fold_test_predictions, fold_dir, "test", active_classes)
-        save_classification_metrics(fold_test_predictions, fold_dir, "test", active_classes)
-        save_coverage_stratified_metrics(
-            fold_test_predictions,
-            fold_dir,
-            "test",
-            active_classes,
-            window_days=args.window_days,
-            min_stage_support_days=args.min_train_stage_days,
-            min_window_coverage_days=args.min_train_window_coverage_days,
-        )
-        if decoded_test_metrics is not None:
-            save_confusion_matrix(decoded_test_predictions, fold_dir, "test_monotonic", active_classes)
-            save_classification_metrics(decoded_test_predictions, fold_dir, "test_monotonic", active_classes)
+        if is_main_process:
+            save_confusion_matrix(fold_test_predictions, fold_dir, "test", active_classes)
+            save_classification_metrics(fold_test_predictions, fold_dir, "test", active_classes)
             save_coverage_stratified_metrics(
-                decoded_test_predictions,
+                fold_test_predictions,
                 fold_dir,
-                "test_monotonic",
+                "test",
                 active_classes,
                 window_days=args.window_days,
                 min_stage_support_days=args.min_train_stage_days,
                 min_window_coverage_days=args.min_train_window_coverage_days,
             )
+        if decoded_test_metrics is not None:
+            if is_main_process:
+                save_confusion_matrix(decoded_test_predictions, fold_dir, "test_monotonic", active_classes)
+                save_classification_metrics(decoded_test_predictions, fold_dir, "test_monotonic", active_classes)
+                save_coverage_stratified_metrics(
+                    decoded_test_predictions,
+                    fold_dir,
+                    "test_monotonic",
+                    active_classes,
+                    window_days=args.window_days,
+                    min_stage_support_days=args.min_train_stage_days,
+                    min_window_coverage_days=args.min_train_window_coverage_days,
+                )
             log_tb_metrics(tb_writer, f"fold_{fold_id}/test_monotonic", decoded_test_metrics, best_epoch or args.epochs)
 
         history_path = os.path.join(fold_dir, "history.csv")
-        pd.DataFrame(history).to_csv(history_path, index=False)
+        if is_main_process:
+            pd.DataFrame(history).to_csv(history_path, index=False)
         log(f"Fold {fold_id}: saved history to {history_path}")
         brief_history_path = os.path.join(fold_dir, "brief_history.csv")
-        brief_history_frame(history).to_csv(brief_history_path, index=False)
+        if is_main_process:
+            brief_history_frame(history).to_csv(brief_history_path, index=False)
         log(f"Fold {fold_id}: saved brief history to {brief_history_path}")
 
     all_history_path = os.path.join(args.out_dir, "all_history.csv")
-    pd.DataFrame(all_history).to_csv(all_history_path, index=False)
+    if is_main_process:
+        pd.DataFrame(all_history).to_csv(all_history_path, index=False)
     log(f"Saved combined history to {all_history_path}")
     brief_history_path = os.path.join(args.out_dir, "brief_history.csv")
-    brief_history_frame(all_history).to_csv(brief_history_path, index=False)
+    if is_main_process:
+        brief_history_frame(all_history).to_csv(brief_history_path, index=False)
     log(f"Saved brief combined history to {brief_history_path}")
     all_val_metrics_path = os.path.join(args.out_dir, "all_val_metrics.csv")
-    pd.DataFrame(all_val_metrics).to_csv(all_val_metrics_path, index=False)
+    if is_main_process:
+        pd.DataFrame(all_val_metrics).to_csv(all_val_metrics_path, index=False)
     log(f"Saved combined validation metrics to {all_val_metrics_path}")
     all_val_predictions_path = os.path.join(args.out_dir, "all_val_predictions.csv")
-    pd.DataFrame(all_val_predictions).to_csv(all_val_predictions_path, index=False)
+    if is_main_process:
+        pd.DataFrame(all_val_predictions).to_csv(all_val_predictions_path, index=False)
     log(f"Saved combined validation predictions to {all_val_predictions_path}")
-    save_coverage_stratified_metrics(
-        all_val_predictions,
-        args.out_dir,
-        "all_val",
-        active_classes,
-        window_days=args.window_days,
-        min_stage_support_days=args.min_train_stage_days,
-        min_window_coverage_days=args.min_train_window_coverage_days,
-    )
+    if is_main_process:
+        save_coverage_stratified_metrics(
+            all_val_predictions,
+            args.out_dir,
+            "all_val",
+            active_classes,
+            window_days=args.window_days,
+            min_stage_support_days=args.min_train_stage_days,
+            min_window_coverage_days=args.min_train_window_coverage_days,
+        )
     if args.monotonic_decoding == "viterbi":
         all_val_decoded = decoded_prediction_view(all_val_predictions)
-        save_confusion_matrix(all_val_decoded, args.out_dir, "all_val_monotonic", active_classes)
-        save_classification_metrics(all_val_decoded, args.out_dir, "all_val_monotonic", active_classes)
-        save_coverage_stratified_metrics(
-            all_val_decoded,
-            args.out_dir,
-            "all_val_monotonic",
-            active_classes,
-            window_days=args.window_days,
-            min_stage_support_days=args.min_train_stage_days,
-            min_window_coverage_days=args.min_train_window_coverage_days,
-        )
+        if is_main_process:
+            save_confusion_matrix(all_val_decoded, args.out_dir, "all_val_monotonic", active_classes)
+            save_classification_metrics(all_val_decoded, args.out_dir, "all_val_monotonic", active_classes)
+            save_coverage_stratified_metrics(
+                all_val_decoded,
+                args.out_dir,
+                "all_val_monotonic",
+                active_classes,
+                window_days=args.window_days,
+                min_stage_support_days=args.min_train_stage_days,
+                min_window_coverage_days=args.min_train_window_coverage_days,
+            )
     all_test_metrics_path = os.path.join(args.out_dir, "all_test_metrics.csv")
-    pd.DataFrame(all_test_metrics).to_csv(all_test_metrics_path, index=False)
+    if is_main_process:
+        pd.DataFrame(all_test_metrics).to_csv(all_test_metrics_path, index=False)
     log(f"Saved combined held-out test metrics to {all_test_metrics_path}")
     all_test_predictions_path = os.path.join(args.out_dir, "all_test_predictions.csv")
-    pd.DataFrame(all_test_predictions).to_csv(all_test_predictions_path, index=False)
+    if is_main_process:
+        pd.DataFrame(all_test_predictions).to_csv(all_test_predictions_path, index=False)
     log(f"Saved combined held-out test predictions to {all_test_predictions_path}")
-    save_confusion_matrix(all_test_predictions, args.out_dir, "all_test", active_classes)
-    save_classification_metrics(all_test_predictions, args.out_dir, "all_test", active_classes)
-    save_coverage_stratified_metrics(
-        all_test_predictions,
-        args.out_dir,
-        "all_test",
-        active_classes,
-        window_days=args.window_days,
-        min_stage_support_days=args.min_train_stage_days,
-        min_window_coverage_days=args.min_train_window_coverage_days,
-    )
-    if args.monotonic_decoding == "viterbi":
-        all_test_decoded = decoded_prediction_view(all_test_predictions)
-        save_confusion_matrix(all_test_decoded, args.out_dir, "all_test_monotonic", active_classes)
-        save_classification_metrics(all_test_decoded, args.out_dir, "all_test_monotonic", active_classes)
+    if is_main_process:
+        save_confusion_matrix(all_test_predictions, args.out_dir, "all_test", active_classes)
+        save_classification_metrics(all_test_predictions, args.out_dir, "all_test", active_classes)
         save_coverage_stratified_metrics(
-            all_test_decoded,
+            all_test_predictions,
             args.out_dir,
-            "all_test_monotonic",
+            "all_test",
             active_classes,
             window_days=args.window_days,
             min_stage_support_days=args.min_train_stage_days,
             min_window_coverage_days=args.min_train_window_coverage_days,
         )
+    if args.monotonic_decoding == "viterbi":
+        all_test_decoded = decoded_prediction_view(all_test_predictions)
+        if is_main_process:
+            save_confusion_matrix(all_test_decoded, args.out_dir, "all_test_monotonic", active_classes)
+            save_classification_metrics(all_test_decoded, args.out_dir, "all_test_monotonic", active_classes)
+            save_coverage_stratified_metrics(
+                all_test_decoded,
+                args.out_dir,
+                "all_test_monotonic",
+                active_classes,
+                window_days=args.window_days,
+                min_stage_support_days=args.min_train_stage_days,
+                min_window_coverage_days=args.min_train_window_coverage_days,
+            )
     if tb_writer is not None:
         if all_test_metrics:
             test_df = pd.DataFrame(all_test_metrics)

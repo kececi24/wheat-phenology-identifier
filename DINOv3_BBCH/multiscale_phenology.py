@@ -2321,7 +2321,7 @@ class TemporalAggregationMixin:
                 float(temporal_feature_gate_init) / (1.0 - float(temporal_feature_gate_init))
             )
             self.temporal_feature_gate_logit = nn.Parameter(
-                torch.tensor(gate_logit, dtype=torch.float32)
+                torch.tensor([gate_logit], dtype=torch.float32)
             )
         if self.weather_feature_dim > 0:
             self.weather_feature_mlp = metadata_mlp(self.weather_feature_dim)
@@ -2329,7 +2329,7 @@ class TemporalAggregationMixin:
                 float(weather_feature_gate_init) / (1.0 - float(weather_feature_gate_init))
             )
             self.weather_feature_gate_logit = nn.Parameter(
-                torch.tensor(gate_logit, dtype=torch.float32)
+                torch.tensor([gate_logit], dtype=torch.float32)
             )
 
     def _add_temporal_features(self, x: torch.Tensor, temporal_features: Optional[torch.Tensor]):
@@ -2389,7 +2389,7 @@ class TemporalAggregationMixin:
             nn.Linear(self.location_feature_hidden_dim, embed_dim),
         )
         gate_logit = math.log(float(location_gate_init) / (1.0 - float(location_gate_init)))
-        self.location_gate_logit = nn.Parameter(torch.tensor(gate_logit, dtype=torch.float32))
+        self.location_gate_logit = nn.Parameter(torch.tensor([gate_logit], dtype=torch.float32))
         self.location_output_norm = nn.LayerNorm(embed_dim)
 
     def _fuse_location_features(
