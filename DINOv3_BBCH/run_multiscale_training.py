@@ -48,7 +48,8 @@ from multiscale_phenology import (
 
 from distributed_runtime import (
     initialize_distributed,
-    make_train_sampler
+    make_train_sampler,
+    read_gate_value
 )
 
 # Edit these values to change the fold split for DINOv3 experiments.
@@ -293,10 +294,8 @@ def model_state_dict(model):
 
 def location_gate_value(model):
     module = getattr(model, "_orig_mod", model)
-    gate_logit = getattr(module, "location_gate_logit", None)
-    if gate_logit is None:
-        return None
-    return float(torch.sigmoid(gate_logit.detach().float()).cpu().item())
+
+    return read_gate_value(getattr(module, "location_gate_logit", None))
 
 
 def temporal_metadata_gate_values(model):
@@ -308,9 +307,8 @@ def temporal_metadata_gate_values(model):
     ):
         gate_logit = getattr(module, parameter_name, None)
         if gate_logit is not None:
-            values[output_name] = float(
-                torch.sigmoid(gate_logit.detach().float()).cpu().item()
-            )
+            values[output_name] = read_gate_value(gate_logit)
+            
     return values
 
 

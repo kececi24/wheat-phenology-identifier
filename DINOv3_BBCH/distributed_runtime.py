@@ -5,6 +5,7 @@ import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import fully_shard
+from torch.distributed.tensor import DTensor
 
 def initialize_distributed():
     if "LOCAL_RANK" in os.environ:
@@ -55,9 +56,13 @@ def shard_temporal_model(model, world_size):
 
     mesh = init_device_mesh(
         "cuda",
-        mesh_shape={world_size},
+        mesh_shape=(world_size,),
         mesh_dim_names=("shard",)
     )
+
+    torch.backends.mha.set_fastpath_enabled(False)
+    model.temporal.enable_nested_tensor = False
+    model.temporal.use_nested_tensor = False
 
     for block in model.temporal.layers:
         fully_shard(block, mesh=mesh, reshard_after_forward=True)
@@ -65,6 +70,21 @@ def shard_temporal_model(model, world_size):
     fully_shard(model, mesh=mesh, reshard_after_forward=True)
 
     return model
+
+@torch.no_grad()
+def read_gate_value(gate_logit):
+    if gate_logit is None:
+        return None
+
+    value = gate_logit.detach():
+
+    if isinstance(value, DTensor):
+        value = value.full_tensor()
+
+    if value.numel() != 1:
+        raise ValueError("Expected a gate with exactly one value")
+
+    return torch.sigmoid(value.float()).item()
 
 if __name__ == "__main__":
     device, rank, world_size = initialize_distributed()
