@@ -15,6 +15,13 @@ or future image is used.
 
 ## Train all LOSO folds
 
+Console parameters can be set in `Baseline_BBCH/config.yaml`; its values are
+used by default, and any explicit command-line option overrides the matching
+YAML value. The default config is loaded from beside the training script. Use
+`--config path/to/other.yaml` to select another file. YAML keys use the
+underscore form of the corresponding option (for example, `fold_workers` for
+`--fold-workers`).
+
 ```powershell
 .\.venv\Scripts\python.exe Baseline_BBCH\run_metadata_exg_training.py `
   --label-path labeling_bbch_iso_dates.csv `
@@ -30,9 +37,11 @@ or future image is used.
 The first run creates `exg_features.csv`. Later runs reuse entries whose image
 path, size, and modification time have not changed. The Meteostat cache is stored
 under the result directory unless `--weather-cache` points to an existing cache.
-The run fails if weather is missing for every row rather than silently presenting
-a zero-weather experiment as a weather baseline. Use `--allow-missing-weather`
-only for pipeline smoke tests.
+By default, training includes weather features and fails if weather is missing
+for every row rather than silently presenting a zero-weather experiment as a
+weather baseline. Set `use_weather: false` in the config or pass `--no-weather`
+to skip weather fetching and omit weather features. Use `--allow-missing-weather`
+only for pipeline smoke tests when weather is enabled.
 
 For a smoke test, add `--only-fold 1`. Each fold selects the number of boosting
 iterations using validation macro-F1 and evaluates its held-out station once.

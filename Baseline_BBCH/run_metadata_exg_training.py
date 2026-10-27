@@ -9,6 +9,7 @@ import json
 import os
 import pickle
 import sys
+import yaml
 from pathlib import Path
 
 # Avoid joblib's Windows physical-core probe in every spawned fold worker.
@@ -185,7 +186,9 @@ def add_exg_features(
     return out
 
 
-def add_causal_features(daily_df: pd.DataFrame, window_days: int) -> tuple[pd.DataFrame, list[str]]:
+def add_causal_features(
+    daily_df: pd.DataFrame, window_days: int, use_weather: bool = True
+) -> tuple[pd.DataFrame, list[str]]:
     out = daily_df.copy()
     out["date"] = pd.to_datetime(out["date"]).dt.normalize()
     out["planting_date"] = pd.to_datetime(out["planting_date"]).dt.normalize()
@@ -198,7 +201,10 @@ def add_causal_features(daily_df: pd.DataFrame, window_days: int) -> tuple[pd.Da
     for _, group in out.groupby("station_year", sort=False):
         group = group.sort_values("date").copy()
         dates = pd.DatetimeIndex(group["date"])
-        for column in ROLLING_SOURCE_COLUMNS:
+        rolling_sources = ROLLING_SOURCE_COLUMNS if use_weather else tuple(
+            column for column in ROLLING_SOURCE_COLUMNS if not column.startswith("weather_")
+        )
+        for column in rolling_sources:
             values = pd.Series(
                 pd.to_numeric(group[column], errors="coerce").fillna(0.0).to_numpy(),
                 index=dates,
@@ -221,7 +227,7 @@ def add_causal_features(daily_df: pd.DataFrame, window_days: int) -> tuple[pd.Da
     feature_columns = [
         "days_since_planting",
         *LOCATION_FEATURE_COLUMNS,
-        *WEATHER_TEMPORAL_FEATURE_COLUMNS,
+        *(WEATHER_TEMPORAL_FEATURE_COLUMNS if use_weather else ()),
         *EXG_COLUMNS,
         *rolling_columns,
     ]
@@ -319,23 +325,24 @@ def train(args) -> None:
     if daily.empty:
         raise RuntimeError("No daily image rows were found.")
 
-    weather_cache = args.weather_cache or str(out_dir / "meteostat_weather_cache.csv")
-    daily = add_weather_metadata(
-        daily,
-        weather_cache,
-        force_refresh=args.weather_force_refresh,
-        gdd_base_temp=args.gdd_base_temp,
-    )
-    missing_columns = [column for column in WEATHER_TEMPORAL_FEATURE_COLUMNS if column.endswith("_missing")]
-    if (
-        not args.allow_missing_weather
-        and missing_columns
-        and daily[missing_columns].to_numpy(dtype=float).mean() >= 0.999
-    ):
-        raise RuntimeError(
-            "Weather is unavailable for every row. Supply a populated --weather-cache, "
-            "allow Meteostat access, or explicitly use --allow-missing-weather."
+    if args.use_weather:
+        weather_cache = args.weather_cache or str(out_dir / "meteostat_weather_cache.csv")
+        daily = add_weather_metadata(
+            daily,
+            weather_cache,
+            force_refresh=args.weather_force_refresh,
+            gdd_base_temp=args.gdd_base_temp,
         )
+        missing_columns = [column for column in WEATHER_TEMPORAL_FEATURE_COLUMNS if column.endswith("_missing")]
+        if (
+            not args.allow_missing_weather
+            and missing_columns
+            and daily[missing_columns].to_numpy(dtype=float).mean() >= 0.999
+        ):
+            raise RuntimeError(
+                "Weather is unavailable for every row. Supply a populated --weather-cache, "
+                "allow Meteostat access, or explicitly use --allow-missing-weather."
+            )
     daily = add_location_metadata(daily, strict=True)
     daily = add_exg_features(
         daily,
@@ -344,7 +351,7 @@ def train(args) -> None:
         max_side=args.exg_max_side,
         workers=args.exg_workers,
     )
-    daily, feature_columns = add_causal_features(daily, args.window_days)
+    daily, feature_columns = add_causal_features(daily, args.window_days, use_weather=args.use_weather)
     daily.to_csv(out_dir / "metadata_exg_daily.csv", index=False)
 
     targets = daily[daily["label"].isin(classes)].copy().reset_index(drop=True)
@@ -463,12 +470,37 @@ def train(args) -> None:
     )
 
 
-def parse_args():
+def parse_args(argv=None):
+    default_config = Path(__file__).resolve().parent / "config.yaml"
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", default=str(default_config))
+    config_args, _ = config_parser.parse_known_args(argv)
+
+    with open(config_args.config, "r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"Configuration in {config_args.config} must be a YAML mapping.")
+
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default=config_args.config, help="YAML file containing console parameter defaults.")
+    parameter_names = {
+        "label_path", "data_path", "out_dir", "weather_cache", "weather_force_refresh",
+        "allow_missing_weather", "use_weather", "gdd_base_temp", "stream", "camera", "ignore_status_csv",
+        "exclude_offseason", "preplant_days", "postharvest_days", "transition_days",
+        "date_tolerance_days", "window_days", "exg_max_side", "exg_workers", "fold_workers",
+        "validation_groups", "expected_stations", "only_fold", "fold_seed", "seed",
+        "max_iter_candidates", "learning_rate", "max_leaf_nodes", "l2_regularization",
+    }
+    unknown = sorted(set(config) - parameter_names)
+    if unknown:
+        raise ValueError(f"Unknown configuration key(s) in {config_args.config}: {', '.join(unknown)}")
     parser.add_argument("--label-path", default="labeling_bbch_iso_dates.csv")
     parser.add_argument("--data-path", default="data")
     parser.add_argument("--out-dir", default="results_metadata_exg_bbch")
     parser.add_argument("--weather-cache", default=None)
+    parser.add_argument("--weather", dest="use_weather", action="store_true", help="Include weather features.")
+    parser.add_argument("--no-weather", dest="use_weather", action="store_false", help="Skip weather data and features.")
+    parser.set_defaults(use_weather=True)
     parser.add_argument("--weather-force-refresh", action="store_true")
     parser.add_argument("--allow-missing-weather", action="store_true")
     parser.add_argument("--gdd-base-temp", type=float, default=0.0)
@@ -493,7 +525,8 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=0.08)
     parser.add_argument("--max-leaf-nodes", type=int, default=15)
     parser.add_argument("--l2-regularization", type=float, default=1.0)
-    return parser.parse_args()
+    parser.set_defaults(use_weather=True, **config)
+    return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
