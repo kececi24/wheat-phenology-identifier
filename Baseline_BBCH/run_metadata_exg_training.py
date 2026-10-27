@@ -525,7 +525,7 @@ def parse_args(argv=None):
     parser.add_argument("--learning-rate", type=float, default=0.08)
     parser.add_argument("--max-leaf-nodes", type=int, default=15)
     parser.add_argument("--l2-regularization", type=float, default=1.0)
-    parser.set_defaults(use_weather=True, **config)
+    parser.set_defaults(**config)
     return parser.parse_args(argv)
 
 
