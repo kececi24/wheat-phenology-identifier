@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 from Adapter_BBCH.adapter_model import (
     METHODS, AdapterClassifier, control_basis, select_label_subset, transition_basis,
 )
+from Adapter_BBCH.config import load_config_defaults
 from Adapter_BBCH.data import (
     CLASSES, discover_rows, file_sha256, load_features, split_indices,
 )
@@ -270,6 +271,7 @@ def run_experiment(args, rows, features, assignments, provenance):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", help="YAML training configuration; explicit CLI options override its values")
     parser.add_argument("--label-path", default="labeling_bbch_iso_dates.csv")
     parser.add_argument("--data-path", default="data")
     parser.add_argument("--embedding-cache", help="Original frozen DINOv3 cache, never a supervised fold cache")
@@ -277,7 +279,7 @@ def parse_args(argv=None):
     parser.add_argument("--stream", choices=["micro", "macro"], default="micro")
     parser.add_argument("--camera", choices=["AUTO", "K1", "K2"], default="AUTO")
     parser.add_argument("--transition-days", type=int, default=2)
-    parser.add_argument("--ignore-status-csv", action="store_true")
+    parser.add_argument("--ignore-status-csv", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--fold-id", type=int, default=1, help="One-based fold; 0 runs complete LOSO")
     parser.add_argument("--validation-groups", type=int, default=2)
     parser.add_argument("--expected-stations", type=int)
@@ -297,7 +299,11 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--ordinal-ce-weight", type=float, default=0.5)
     parser.add_argument("--device", default="cpu", help="Small cached pilot can run on CPU; cuda also supported")
-    parser.add_argument("--dry-run", action="store_true", help="Discover labels/folds only; no writes or cache load")
+    parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=False,
+                        help="Discover labels/folds only; no writes or cache load")
+    config_args, _ = parser.parse_known_args(argv)
+    if config_args.config:
+        parser.set_defaults(**load_config_defaults(parser, config_args.config))
     args = parser.parse_args(argv)
     if min(args.epochs, args.batch_size, args.rank, args.hidden_dim, args.min_stage_images,
            args.min_transition_stations, args.validation_groups) < 1 or args.fold_id < 0 or args.patience < 0:

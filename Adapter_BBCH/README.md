@@ -16,9 +16,7 @@ subsampling, and basis construction. Inference needs one image's cached features
 
 The shared label builder, LOSO scheduler, ordinal loss, and frozen feature
 precomputation are imported/reused from `DINOv3_BBCH/`. Existing model files are
-not modified. Run the commands below from the repository root on the remote
-machine. The new code and tests have **not been executed locally**, at the user's
-request; remote unit/smoke tests are supplied below.
+not modified. Run the commands below from the repository root. 
 
 ## 1. Dependencies and label/fold audit
 
@@ -26,8 +24,7 @@ request; remote unit/smoke tests are supplied below.
 python -m pip install -r Adapter_BBCH/requirements.txt
 
 python Adapter_BBCH/run_adapter_training.py \
-  --label-path labeling_bbch_iso_dates.csv \
-  --data-path data \
+  --config Adapter_BBCH/config.yaml \
   --dry-run
 ```
 
@@ -78,21 +75,41 @@ selection. No spatial region is treated as an independent labeled image.
 Augmented cache views are not used by this first pilot. Do not compare it with a
 baseline using a different pooling scheme as evidence for the adapter alone.
 
-## 3. Run one fold and all five controls
+## 3. Configure and run one fold with all five controls
+
+Edit `Adapter_BBCH/config.yaml` to set the cache path, output directory, folds,
+adapter settings, label budget, and training settings. The supplied file contains
+all training options and uses the same defaults as the CLI examples.
 
 ```bash
 python Adapter_BBCH/run_adapter_training.py \
-  --label-path labeling_bbch_iso_dates.csv \
-  --data-path data \
-  --embedding-cache results_adapter_frozen_cache/vit_embeddings.pt \
-  --out-dir results_adapter_pilot_seed42 \
-  --fold-id 1 --methods all \
-  --rank 6 --min-stage-images 2 --min-transition-stations 2 \
-  --epochs 20 --patience 5 \
-  --hidden-dim 128 --dropout 0.2 \
-  --batch-size 64 --lr 3e-4 --weight-decay 3e-4 \
-  --seed 42 --fold-seed 42 --device cpu
+  --config Adapter_BBCH/config.yaml
 ```
+
+Configuration precedence is: parser defaults, then YAML, then explicit CLI
+options. YAML loading is explicit through `--config`; CLI-only invocation remains
+supported. Relative data/cache/output paths are resolved from the current working
+directory, so run from the repository root, or use absolute paths.
+
+The file is a flat mapping. Keys use underscores (`fold_id`) or hyphens
+(`fold-id`). `methods` is a YAML list: `[all]` or `[transition, random, pca]`.
+Booleans use `true`/`false`; `expected_stations: null` leaves the station-count
+check disabled. Unknown/duplicate keys, invalid types/choices, and invalid budgets
+are rejected. Resolved settings, including CLI overrides, are saved in
+`run_config.json` and each selected checkpoint.
+
+For a one-off override without editing the file:
+
+```bash
+python Adapter_BBCH/run_adapter_training.py \
+  --config Adapter_BBCH/config.yaml \
+  --fold-id 0 --methods transition random pca \
+  --label-fraction 0.25 --out-dir results_adapter_budget25 --device cuda
+```
+
+If YAML enables a boolean, `--no-dry-run` or `--no-ignore-status-csv` can disable
+it. This configuration applies to the adapter training runner; shared DINOv3
+feature precomputation in section 2 retains its existing CLI.
 
 The in-memory classifier is small; CPU is sufficient for this phase, and
 `--device cuda` is supported. The backbone does not run during adapter training.
@@ -220,7 +237,7 @@ Use the same backbone and extraction settings for any new image cache:
 
 ```bash
 python Adapter_BBCH/infer_cached_image.py \
-  --checkpoint results_adapter_pilot_seed42/fold_1/transition/best_model.pt \
+  --checkpoint results_adapter_bbch_pilot/fold_1/transition/best_model.pt \
   --embedding-cache results_adapter_frozen_cache/vit_embeddings.pt \
   --image-path data/02.02/2015/K1/10X/ACTUAL_FILENAME.jpeg
 ```
