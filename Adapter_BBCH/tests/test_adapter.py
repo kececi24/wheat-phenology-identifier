@@ -95,6 +95,9 @@ class BasisTests(unittest.TestCase):
         selected = rows.iloc[first]
         self.assertEqual(len(selected), rows.groupby(["station_code", "class_idx"]).ngroups)
         self.assertLess(len(first), len(rows))
+        middle = select_label_subset(rows, 0.5, 42)
+        self.assertTrue(set(first).issubset(middle))
+        self.assertTrue(set(middle).issubset(select_label_subset(rows, 1.0, 42)))
 
     def test_zero_initialized_residual_and_frozen_basis(self):
         _, x = synthetic_data()
@@ -167,16 +170,36 @@ class DataAndRunnerTests(unittest.TestCase):
             label_path.write_text("synthetic fixture only", encoding="utf-8")
             args = parse_args(["--label-path", str(label_path), "--embedding-cache", "synthetic",
                                "--out-dir", str(Path(folder) / "run"), "--epochs", "2",
-                               "--rank", "3", "--hidden-dim", "8", "--dropout", "0"])
+                               "--rank", "3", "--hidden-dim", "8", "--dropout", "0",
+                               "--label-percentage", "25", "--min-stage-images", "1"])
             comparison = run_experiment(args, rows, x, assignments, {"synthetic": True})
             self.assertEqual(len(comparison), 5)
             fold = Path(args.out_dir) / "fold_1"
             report = json.loads((fold / "basis_report.json").read_text())
             self.assertEqual(report["training_stations"], ["02.01", "03.01"])
+            self.assertEqual(report["training_images"], 14)
+            coverage = json.loads((fold / "split_info.json").read_text())["label_coverage"]
+            self.assertEqual(coverage["requested_percentage"], 25)
+            self.assertEqual(coverage["full_training_images"], 42)
+            self.assertEqual(coverage["selected_training_images"], 14)
+            self.assertEqual(coverage["sampling_seed"], args.seed + 1)
+            self.assertEqual(coverage["sampling_policy_version"], "nested_stratified_permutation_v1")
+            self.assertAlmostEqual(coverage["realized_percentage"], 100 / 3)
+            self.assertEqual(len(pd.read_csv(fold / "selected_training_labels.csv")), 14)
+            self.assertEqual(comparison[0]["requested_label_percentage"], 25)
+            self.assertAlmostEqual(comparison[0]["realized_label_percentage_mean"], 100 / 3)
+            self.assertEqual(comparison[0]["full_training_images_across_folds"], 42)
+            self.assertEqual(comparison[0]["selected_training_images_across_folds"], 14)
+            per_method = pd.read_csv(Path(args.out_dir) / "all_test_metrics.csv")
+            self.assertEqual(set(per_method["requested_label_percentage"]), {25})
+            self.assertEqual(set(per_method["selected_training_images"]), {14})
+            comparison_file = pd.read_csv(Path(args.out_dir) / "comparison_summary.csv")
+            self.assertIn("realized_label_percentage_mean", comparison_file.columns)
             self.assertEqual({entry["rank"] for entry in comparison if entry["method"] != "none"}, {3})
             for method in ("none", "transition", "random", "pca", "learned"):
                 directory = fold / method
                 checkpoint = torch.load(directory / "best_model.pt", weights_only=True)
+                self.assertEqual(checkpoint["label_coverage"]["selected_training_images"], 14)
                 model = AdapterClassifier.from_checkpoint(checkpoint).eval()
                 test_ix = split_indices(rows, assignments, 1)["test"]
                 with torch.no_grad():
@@ -184,6 +207,15 @@ class DataAndRunnerTests(unittest.TestCase):
                 saved = pd.read_csv(directory / "test_predictions.csv")
                 self.assertTrue(np.allclose(saved[[f"prob_{name}" for name in CLASSES]],
                                             expected, atol=1e-6))
+                history = pd.read_csv(directory / "history.csv")
+                self.assertEqual(history.loc[0, "train_samples"], 14)
+                self.assertEqual(history.loc[0, "validation_samples"], 21)
+                val_metrics = json.loads((directory / "val_metrics.json").read_text())
+                self.assertEqual(val_metrics["samples"], 21)
+                self.assertEqual(val_metrics["label_coverage"]["requested_percentage"], 25)
+                test_metrics = json.loads((directory / "test_metrics.json").read_text())
+                self.assertEqual(test_metrics["samples"], 21)
+                self.assertEqual(test_metrics["label_coverage"]["selected_training_images"], 14)
                 self.assertFalse(comparison[0]["complete_loso"])
 
 

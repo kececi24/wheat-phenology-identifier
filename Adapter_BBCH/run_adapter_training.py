@@ -29,6 +29,9 @@ from Adapter_BBCH.data import (
 from DINOv3_BBCH.multiscale_phenology import HybridOrdinalLoss
 
 
+LABEL_SAMPLING_POLICY = "nested_stratified_permutation_v1"
+
+
 def seed_everything(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -114,8 +117,27 @@ def prediction_table(rows, probabilities, fold, method):
     return result
 
 
+def label_coverage_report(args, full_training_rows, selected_training_rows, sampling_seed):
+    full_count = len(full_training_rows)
+    selected_count = len(selected_training_rows)
+    fraction = selected_count / full_count
+    return {
+        "requested_percentage": args.label_percentage,
+        "requested_fraction": args.label_fraction,
+        "realized_percentage": 100.0 * fraction,
+        "realized_fraction": fraction,
+        "full_training_images": full_count,
+        "selected_training_images": selected_count,
+        "training_strata": int(full_training_rows.groupby(
+            ["station_code", "station_year", "class_idx"], sort=True).ngroups),
+        "sampling_policy_version": LABEL_SAMPLING_POLICY,
+        "sampling_seed": int(sampling_seed),
+        "sampling_policy": "ceil per station-year/stage stratum, minimum one image per stratum",
+    }
+
+
 def train_method(args, method, basis, rows, features, indices, fold_id,
-                 fold_dir, basis_report, provenance):
+                 fold_dir, basis_report, provenance, label_coverage):
     output = fold_dir / method
     output.mkdir(parents=True, exist_ok=True)
     seed = args.seed + fold_id
@@ -156,10 +178,12 @@ def train_method(args, method, basis, rows, features, indices, fold_id,
                           "epoch": epoch, "val_macro_f1": best_f1,
                           "args": vars(args), "fold": fold_id,
                           "basis_report": basis_report, "feature_provenance": provenance,
+                          "label_coverage": label_coverage,
                           "label_sha256": file_sha256(args.label_path),
                           "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)}
             torch.save(checkpoint, output / "best_model.pt")
-            write_json(output / "val_metrics.json", metrics["validation"])
+            write_json(output / "val_metrics.json", {
+                **metrics["validation"], "label_coverage": label_coverage})
             prediction_table(rows.iloc[indices["validation"]], val_probs, fold_id, method).to_csv(
                 output / "val_predictions.csv", index=False)
         else:
@@ -173,7 +197,8 @@ def train_method(args, method, basis, rows, features, indices, fold_id,
     ix = indices["test"]
     test_metrics, probabilities = run_epoch(
         model, features[ix], targets[ix], hard[ix], criterion, args.device, args.batch_size)
-    write_json(output / "test_metrics.json", test_metrics)
+    write_json(output / "test_metrics.json", {
+        **test_metrics, "label_coverage": label_coverage})
     pd.DataFrame(test_metrics["confusion_matrix"], index=CLASSES, columns=CLASSES).to_csv(
         output / "confusion_matrix.csv")
     pd.DataFrame.from_dict(test_metrics["per_class"], orient="index").to_csv(
@@ -183,6 +208,10 @@ def train_method(args, method, basis, rows, features, indices, fold_id,
     summary = {"fold": fold_id, "method": method, "best_epoch": checkpoint["epoch"],
                "val_macro_f1": checkpoint["val_macro_f1"],
                "rank": int(basis.shape[0]) if method != "none" else 0,
+               "requested_label_percentage": label_coverage["requested_percentage"],
+               "realized_label_percentage": label_coverage["realized_percentage"],
+               "full_training_images": label_coverage["full_training_images"],
+               "selected_training_images": label_coverage["selected_training_images"],
                "trainable_parameters": checkpoint["trainable_parameters"],
                **{key: value for key, value in test_metrics.items()
                   if not isinstance(value, (dict, list))}}
@@ -205,21 +234,33 @@ def run_experiment(args, rows, features, assignments, provenance):
     rows.to_csv(out / "image_metadata.csv", index=False)
     assignments.to_csv(out / "fold_assignments.csv", index=False)
     write_json(out / "run_config.json", {"args": vars(args), "classes": CLASSES,
-               "label_sha256": file_sha256(args.label_path), "feature_provenance": provenance})
-    summaries, predictions = [], []
+               "label_sha256": file_sha256(args.label_path), "feature_provenance": provenance,
+               "requested_label_coverage": {
+                   "percentage": args.label_percentage,
+                   "fraction": args.label_fraction,
+                   "sampling_policy_version": LABEL_SAMPLING_POLICY,
+                   "sampling_policy": "ceil per station-year/stage stratum, minimum one image per stratum"}})
+    summaries, predictions, coverage_reports = [], [], []
     for fold_id in fold_ids:
         indices = split_indices(rows, assignments, fold_id)
         full_train = indices["train"].copy()
-        subset = select_label_subset(rows.iloc[full_train], args.label_fraction, args.seed + fold_id)
+        sampling_seed = args.seed + fold_id
+        subset = select_label_subset(rows.iloc[full_train], args.label_fraction, sampling_seed)
         indices["train"] = full_train[subset]
         train_rows = rows.iloc[indices["train"]].reset_index(drop=True)
+        coverage = label_coverage_report(args, rows.iloc[full_train], train_rows, sampling_seed)
+        coverage_reports.append(coverage)
         train_features = features[indices["train"]]
         fold_dir = out / f"fold_{fold_id}"
         fold_dir.mkdir()
         split_report = {role: {"stations": sorted(rows.iloc[ix]["station_code"].unique()),
                                "images": len(ix)} for role, ix in indices.items()}
-        split_report.update(full_training_images=len(full_train),
-                            realized_label_fraction=len(train_rows) / len(full_train))
+        split_report.update(label_coverage=coverage,
+                            full_training_images=len(full_train),
+                            selected_training_images=len(train_rows),
+                            requested_label_percentage=args.label_percentage,
+                            realized_label_fraction=coverage["realized_fraction"],
+                            realized_label_percentage=coverage["realized_percentage"])
         write_json(fold_dir / "split_info.json", split_report)
         train_rows[["image_key", "station_code", "station_year", "class_idx"]].to_csv(
             fold_dir / "selected_training_labels.csv", index=False)
@@ -233,6 +274,7 @@ def run_experiment(args, rows, features, assignments, provenance):
                 train_features, train_rows, len(CLASSES), args.rank,
                 args.min_stage_images, args.min_transition_stations)
             effective_rank = bases["transition"].shape[0]
+        basis_report["label_coverage"] = coverage
         write_json(fold_dir / "basis_report.json", basis_report)
         for method in methods:
             if method not in bases:
@@ -241,7 +283,7 @@ def run_experiment(args, rows, features, assignments, provenance):
         torch.save(bases, fold_dir / "bases.pt")
         for method in methods:
             summary, table = train_method(args, method, bases[method], rows, features,
-                indices, fold_id, fold_dir, basis_report, provenance)
+                indices, fold_id, fold_dir, basis_report, provenance, coverage)
             summaries.append(summary)
             predictions.append(table)
             pd.DataFrame(summaries).to_csv(out / "all_test_metrics.csv", index=False)
@@ -256,6 +298,17 @@ def run_experiment(args, rows, features, assignments, provenance):
         aggregate = {"method": method, "folds": len(fold_ids),
                      "complete_loso": len(fold_ids) == len(available),
                      **{key: val for key, val in pooled.items() if not isinstance(val, (dict, list))}}
+        realized_percentages = [report["realized_percentage"] for report in coverage_reports]
+        full_training_images = sum(report["full_training_images"] for report in coverage_reports)
+        selected_training_images = sum(report["selected_training_images"] for report in coverage_reports)
+        aggregate.update(
+            requested_label_percentage=args.label_percentage,
+            realized_label_percentage_mean=float(np.mean(realized_percentages)),
+            realized_label_percentage_min=float(np.min(realized_percentages)),
+            realized_label_percentage_max=float(np.max(realized_percentages)),
+            realized_label_percentage_weighted=(100.0 * selected_training_images / full_training_images),
+            full_training_images_across_folds=full_training_images,
+            selected_training_images_across_folds=selected_training_images)
         for metric in ("accuracy", "macro_f1"):
             values = [station[metric] for station in station_metrics]
             aggregate[f"station_{metric}_mean"] = float(np.mean(values))
@@ -289,7 +342,13 @@ def parse_args(argv=None):
     parser.add_argument("--rank", type=int, default=6)
     parser.add_argument("--min-stage-images", type=int, default=2)
     parser.add_argument("--min-transition-stations", type=int, default=2)
-    parser.add_argument("--label-fraction", type=float, default=1.0)
+    label_budget = parser.add_mutually_exclusive_group()
+    label_budget.add_argument(
+        "--label-percentage", type=float, default=None,
+        help="Percentage of training labels to select (>0 to 100); group rounding may increase it")
+    label_budget.add_argument(
+        "--label-fraction", type=float, default=None,
+        help="Legacy fraction of training labels to select (0 to 1], e.g. 0.25")
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -303,13 +362,35 @@ def parse_args(argv=None):
                         help="Discover labels/folds only; no writes or cache load")
     config_args, _ = parser.parse_known_args(argv)
     if config_args.config:
-        parser.set_defaults(**load_config_defaults(parser, config_args.config))
+        config_defaults = load_config_defaults(parser, config_args.config)
+        for name in ("label_fraction", "label_percentage"):
+            if name in config_defaults and config_defaults[name] is None:
+                parser.error(f"config {config_args.config}: {name} cannot be null")
+        if "label_fraction" in config_defaults and "label_percentage" in config_defaults:
+            parser.error("config cannot set both label_fraction and label_percentage")
+        # The two CLI names express the same setting in different units. An
+        # explicit CLI value takes precedence over either YAML spelling.
+        if config_args.label_percentage is not None or config_args.label_fraction is not None:
+            config_defaults.pop("label_fraction", None)
+            config_defaults.pop("label_percentage", None)
+        parser.set_defaults(**config_defaults)
     args = parser.parse_args(argv)
     if min(args.epochs, args.batch_size, args.rank, args.hidden_dim, args.min_stage_images,
            args.min_transition_stations, args.validation_groups) < 1 or args.fold_id < 0 or args.patience < 0:
         parser.error("Dimensions, epochs, batch size and support thresholds must be positive")
-    if not 0 < args.label_fraction <= 1 or not 0 <= args.dropout < 1:
-        parser.error("label-fraction must be in (0,1] and dropout in [0,1)")
+    if args.label_percentage is None and args.label_fraction is None:
+        args.label_percentage = 100.0
+        args.label_fraction = 1.0
+    elif args.label_percentage is not None:
+        if not math.isfinite(args.label_percentage) or not 0 < args.label_percentage <= 100:
+            parser.error("label-percentage must be finite and in (0,100]")
+        args.label_fraction = args.label_percentage / 100.0
+    else:
+        if not math.isfinite(args.label_fraction) or not 0 < args.label_fraction <= 1:
+            parser.error("label-fraction must be finite and in (0,1]")
+        args.label_percentage = args.label_fraction * 100.0
+    if not 0 <= args.dropout < 1:
+        parser.error("dropout must be in [0,1)")
     if (not math.isfinite(args.lr) or args.lr <= 0 or not math.isfinite(args.weight_decay)
             or args.weight_decay < 0 or not 0 <= args.ordinal_ce_weight <= 1 or args.transition_days < 0):
         parser.error("Invalid learning rate, weight decay, CE weight, or transition days")

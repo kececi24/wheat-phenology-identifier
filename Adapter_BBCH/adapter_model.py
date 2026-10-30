@@ -125,7 +125,12 @@ def control_basis(method, training_features, rank, seed):
 
 
 def select_label_subset(rows, fraction=1.0, seed=42):
-    """Stratify TRAINING labels by station-year/stage; do not use hidden labels later."""
+    """Select a deterministic, nested, stratified subset of TRAINING labels.
+
+    Sampling is nested across fractions for a fixed seed. Each station-year/stage
+    group retains at least one image, so the realized fraction can exceed the
+    requested fraction, especially in small groups.
+    """
     if not 0 < fraction <= 1:
         raise ValueError("Label fraction must be in (0, 1]")
     if fraction == 1:
@@ -135,7 +140,9 @@ def select_label_subset(rows, fraction=1.0, seed=42):
     for positions in rows.reset_index(drop=True).groupby(
             ["station_code", "station_year", "class_idx"], sort=True).indices.values():
         count = max(1, math.ceil(fraction * len(positions)))
-        indices.extend(rng.choice(positions, count, replace=False).tolist())
+        # Take a prefix of one seeded permutation per stratum. This keeps the
+        # lower-budget subset inside every higher-budget subset for the same seed.
+        indices.extend(rng.permutation(positions)[:count].tolist())
     return np.asarray(sorted(indices), dtype=np.int64)
 
 

@@ -46,7 +46,9 @@ class ConfigTests(unittest.TestCase):
         invalid = ["epochs_typo: 10", "rank: 2\nrank: 3", "fold-id: 1\nfold_id: 2",
                    "rank: true", 'dry_run: "false"', "methods: all", "methods: []",
                    "methods: [missing]", "rank: null", "rank: -1", "lr: .nan",
-                   "methods: [all, pca]", "label_fraction: 0", "stream: both",
+                   "methods: [all, pca]", "label_fraction: 0", "label_fraction: false",
+                   "label_percentage: true", "label_percentage: null",
+                   "stream: both",
                    "- rank: 2", "config: other.yaml"]
         for text in invalid:
             with self.subTest(text=text), contextlib.redirect_stderr(io.StringIO()):
@@ -60,6 +62,30 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(args.methods, ["all"])
         self.assertEqual(args.fold_id, 1)
         self.assertEqual(args.embedding_cache, "results_adapter_frozen_cache/vit_embeddings.pt")
+        self.assertEqual(args.label_percentage, 100)
+        args = parse_args(["--config", str(path), "--dry-run", "--label-fraction", "0.25"])
+        self.assertEqual(args.label_percentage, 25)
+        self.assertEqual(args.label_fraction, 0.25)
+
+    def test_label_percentage_and_fraction_alias_precedence(self):
+        args = self.parse_yaml("label_percentage: 50\n", "--dry-run", "--label-fraction", "0.25")
+        self.assertEqual(args.label_percentage, 25)
+        self.assertEqual(args.label_fraction, 0.25)
+        args = self.parse_yaml("label_fraction: 0.5\n", "--dry-run", "--label-percentage", "25")
+        self.assertEqual(args.label_percentage, 25)
+        self.assertEqual(args.label_fraction, 0.25)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.parse_yaml("label_percentage: 50\nlabel_fraction: 0.5\n", "--dry-run")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["--dry-run", "--label-percentage", "25", "--label-fraction", "0.25"])
+
+    def test_rejects_nonfinite_or_out_of_range_label_budgets(self):
+        for option, value in (("--label-percentage", "0"), ("--label-percentage", "100.1"),
+                              ("--label-percentage", "nan"), ("--label-percentage", "inf"),
+                              ("--label-fraction", "nan")):
+            with self.subTest(option=option, value=value), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                parse_args(["--dry-run", option, value])
 
     def test_missing_config_is_reported(self):
         with tempfile.TemporaryDirectory() as folder:

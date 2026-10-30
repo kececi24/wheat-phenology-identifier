@@ -13,8 +13,8 @@ camera: AUTO
 transition_days: 2
 ignore_status_csv: false
 
-# First check one fold. Set fold_id: 0 for complete station-held-out LOSO.
-fold_id: 1
+# Check individual fold. Set fold_id: 0 for complete station-held-out LOSO.
+fold_id: 0
 validation_groups: 2
 expected_stations: null  # Set to the audited count to enforce it.
 fold_seed: 42
@@ -25,7 +25,9 @@ methods: [all]
 rank: 6
 min_stage_images: 2
 min_transition_stations: 2
-label_fraction: 1.0
+# Training labels per fold only; validation/test remain complete. Rounded per
+# station-year/stage group, so actual coverage can be slightly higher.
+label_percentage: 100
 hidden_dim: 128
 dropout: 0.2
 

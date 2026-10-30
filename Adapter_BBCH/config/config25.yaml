@@ -1,0 +1,41 @@
+# Run from the repository root:
+# python Adapter_BBCH/run_adapter_training.py --config Adapter_BBCH/config.yaml
+# Explicit CLI options override this file. Paths are relative to the working
+# directory, not this YAML file. Omitted keys retain the parser defaults.
+
+# Data and original frozen DINOv3 cache (create it using README section 2).
+label_path: labeling_bbch_iso_dates.csv
+data_path: data
+embedding_cache: results_adapter_frozen_cache/vit_embeddings.pt
+out_dir: results_adapter_bbch_pilot
+stream: micro
+camera: AUTO
+transition_days: 2
+ignore_status_csv: false
+
+# Check individual fold. Set fold_id: 0 for complete station-held-out LOSO.
+fold_id: 0
+validation_groups: 2
+expected_stations: null  # Set to the audited count to enforce it.
+fold_seed: 42
+seed: 42
+
+# Use [all], or e.g. [transition, random, pca]. All arms use the same MLP.
+methods: [all]
+rank: 6
+min_stage_images: 2
+min_transition_stations: 2
+# Training labels per fold only; validation/test remain complete. Rounded per
+# station-year/stage group, so actual coverage can be slightly higher.
+label_percentage: 25
+hidden_dim: 128
+dropout: 0.2
+
+lr: 3.0e-4
+weight_decay: 3.0e-4
+epochs: 20
+patience: 5
+batch_size: 64
+ordinal_ce_weight: 0.5
+device: cpu  # cuda is also supported; the frozen-feature head is small.
+dry_run: false

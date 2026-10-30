@@ -78,8 +78,11 @@ baseline using a different pooling scheme as evidence for the adapter alone.
 ## 3. Configure and run one fold with all five controls
 
 Edit `Adapter_BBCH/config.yaml` to set the cache path, output directory, folds,
-adapter settings, label budget, and training settings. The supplied file contains
-all training options and uses the same defaults as the CLI examples.
+adapter settings, label budget, and training settings. Set `label_percentage`
+to a percentage greater than 0 and at most 100; the supplied file defaults to
+100%. The legacy `label_fraction` setting remains supported, where `0.25` means
+25%. The supplied file contains all training options and uses the same defaults
+as the CLI examples.
 
 ```bash
 python Adapter_BBCH/run_adapter_training.py \
@@ -87,9 +90,12 @@ python Adapter_BBCH/run_adapter_training.py \
 ```
 
 Configuration precedence is: parser defaults, then YAML, then explicit CLI
-options. YAML loading is explicit through `--config`; CLI-only invocation remains
-supported. Relative data/cache/output paths are resolved from the current working
-directory, so run from the repository root, or use absolute paths.
+options. An explicit `--label-percentage` or legacy `--label-fraction` overrides
+either label-budget spelling in YAML. A YAML file cannot specify both settings,
+and a CLI command cannot specify both options. YAML loading is explicit through
+`--config`; CLI-only invocation remains supported. Relative data/cache/output
+paths are resolved from the current working directory, so run from the
+repository root, or use absolute paths.
 
 The file is a flat mapping. Keys use underscores (`fold_id`) or hyphens
 (`fold-id`). `methods` is a YAML list: `[all]` or `[transition, random, pca]`.
@@ -104,8 +110,11 @@ For a one-off override without editing the file:
 python Adapter_BBCH/run_adapter_training.py \
   --config Adapter_BBCH/config.yaml \
   --fold-id 0 --methods transition random pca \
-  --label-fraction 0.25 --out-dir results_adapter_budget25 --device cuda
+  --label-percentage 25 --out-dir results_adapter_budget25 --device cuda
 ```
+
+For backward compatibility, the percentage option can instead be written
+`--label-fraction 0.25`.
 
 If YAML enables a boolean, `--no-dry-run` or `--no-ignore-status-csv` can disable
 it. This configuration applies to the adapter training runner; shared DINOv3
@@ -177,15 +186,26 @@ After the one-fold pipeline check, use `--fold-id 0` with a new `--out-dir` for
 complete station-held-out evaluation. Keep `--fold-seed 42` fixed across methods
 and budgets; repeat with predefined training seeds, not seeds picked by test score.
 
-Use `--label-fraction 0.1`, `0.25`, `0.5`, and `1.0` in separate output directories.
+Use `--label-percentage 10`, `25`, `50`, and `100` in separate output directories.
 Both prototype estimation/PCA and supervised training see **only** that selected
-training subset. Validation and test remain complete. Simulated label sampling
-is stratified by station-year and stage, retaining at least one example per group;
-it uses the full labels to define strata and is not an annotation-acquisition
-policy. Rounding can exceed the requested fraction, especially for rare stages.
-The realized fraction is saved. Sparse subsets may require a predeclared lower
+training subset. Validation and test remain complete. For a fixed seed, selected
+subsets are nested across budgets. Sampling is stratified by station-year and
+stage, retaining at least one example per group; it uses the full labels to define
+strata and is not an annotation-acquisition policy. The sampler selects
+`ceil((requested percentage / 100) × group size)` images per group. Group rounding
+and the minimum of one image can therefore increase realized coverage, especially for
+rare stages; the requested percentage is not an exact global sample count. The
+requested and realized percentages, selected and full training-image counts, and
+sampling policy are saved in split reports, basis reports, per-method metrics, and
+checkpoints. Sparse subsets may require a predeclared lower
 `--min-stage-images`; compare the same setting across methods and never fill
 prototype gaps using withheld labels.
+
+The nested sampler replaces the earlier independent random draws for budgets
+below 100%; the full-data selection is unchanged. Reports include its policy
+version and effective per-fold sampling seed (`seed + fold_id`). Aggregate
+training-image counts sum the fold-specific sets and include repeated images
+across LOSO folds; they are not unique annotation counts.
 
 Checkpoints are selected by validation macro-F1 across all seven fixed classes.
 Test is evaluated once per method/fold after selection. Do not choose rank,
@@ -200,7 +220,7 @@ out_dir/
   image_metadata.csv
   fold_assignments.csv
   fold_1/
-    split_info.json               # stations, counts, realized label fraction
+    split_info.json               # split stations/counts and requested/realized label coverage
     selected_training_labels.csv
     basis_report.json
     bases.pt
@@ -215,8 +235,8 @@ out_dir/
       per_class_metrics.csv
   all_test_metrics.csv
   combined_test_predictions.csv
-  aggregate_<method>.json
-  comparison_summary.csv
+  aggregate_<method>.json           # requested and realized coverage by method
+  comparison_summary.csv             # requested/realized coverage for budget comparisons
 ```
 
 The comparison includes pooled accuracy/macro-F1, station-mean/std/min metrics,
