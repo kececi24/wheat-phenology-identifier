@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from Adapter_BBCH.run_adapter_training import parse_args
+from Adapter_BBCH.run_cached_training import parse_args
 
 
 class ConfigTests(unittest.TestCase):
@@ -57,10 +57,10 @@ class ConfigTests(unittest.TestCase):
 
     def test_cli_only_defaults_and_packaged_config(self):
         self.assertEqual(parse_args(["--dry-run"]).rank, 6)
-        path = Path(__file__).resolve().parents[1] / "config.yaml"
+        path = Path(__file__).resolve().parents[1] / "config_cached" / "config.yaml"
         args = parse_args(["--config", str(path), "--dry-run"])
         self.assertEqual(args.methods, ["all"])
-        self.assertEqual(args.fold_id, 1)
+        self.assertEqual(args.fold_id, 0)
         self.assertEqual(args.embedding_cache, "results_adapter_frozen_cache/vit_embeddings.pt")
         self.assertEqual(args.label_percentage, 100)
         args = parse_args(["--config", str(path), "--dry-run", "--label-fraction", "0.25"])

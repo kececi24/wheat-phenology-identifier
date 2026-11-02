@@ -18,7 +18,7 @@ from Adapter_BBCH.adapter_model import (
     AdapterClassifier, control_basis, normalized_features, select_label_subset, transition_basis,
 )
 from Adapter_BBCH.data import CLASSES, image_key, load_features, pool_feature, split_indices
-from Adapter_BBCH.run_adapter_training import parse_args, run_experiment
+from Adapter_BBCH.run_cached_training import parse_args, run_experiment
 
 
 def synthetic_data():

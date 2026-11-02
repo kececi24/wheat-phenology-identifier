@@ -1,6 +1,7 @@
 """Training-only basis estimation and small residual adapters.
 
-All bases use exactly the same parameter-free LayerNorm coordinates as inference.
+Cached-feature bases use parameter-free LayerNorm coordinates. Internal-block
+priors can preserve the block's already normalized coordinates explicitly.
 No station identifier, stage label, or date is an input to the classifier.
 """
 
@@ -27,13 +28,14 @@ def _check_features(features):
 
 
 def transition_basis(features, rows, num_classes, rank=6, min_stage_images=2,
-                     min_stations=2):
+                     min_stations=2, normalize=True):
     """Estimate a basis from TRAINING rows only; caller must split first.
 
     Average images within station-year/stage, differences within station-year,
     differences across years within station, then across stations equally.
     Soft targets train the classifier; hard interval labels define prototypes.
     Missing/unsupported adjacent boundaries are skipped, never bridged.
+    Set normalize=False for summaries of actual block norm2 activations.
     """
     _check_features(features)
     if len(rows) != len(features):
@@ -45,7 +47,10 @@ def transition_basis(features, rows, num_classes, rank=6, min_stage_images=2,
         raise ValueError(f"Prototype rows require nonmissing {sorted(required)}")
     if not rows["class_idx"].isin(range(num_classes)).all():
         raise ValueError("Prototype class indices are outside the class order")
-    z = normalized_features(features.detach().cpu()).double()
+    # Internal adapters receive the block's actual norm2 output. In that case
+    # preserve its coordinates rather than normalizing the image mean again.
+    z = (normalized_features(features.detach().cpu()) if normalize
+         else features.detach().cpu().float()).double()
     table = rows.reset_index(drop=True).copy()
     # One season must not accidentally combine two physical stations.
     if table.groupby("station_year")["station_code"].nunique().max() != 1:
@@ -95,6 +100,7 @@ def transition_basis(features, rows, num_classes, rank=6, min_stage_images=2,
               "available_rank": available, "singular_values": singular.tolist(),
               "min_stage_images": min_stage_images, "min_stations": min_stations,
               "training_images": len(rows),
+              "normalize_image_features": normalize,
               "training_stations": sorted(table["station_code"].astype(str).unique()),
               "boundaries": boundaries}
     return basis.float(), report

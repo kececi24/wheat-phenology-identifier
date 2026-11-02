@@ -1,278 +1,181 @@
-# Transition-subspace adapter: first BBCH pilot
+# DINOv3 transformer-block adapters for BBCH
 
-This is an **unvalidated research experiment**, not a claim of improvement over
-LoRA or the temporal models. The initial implementation operates after frozen
-DINOv3 feature pooling:
+This experiment trains single-image classifiers from **raw images**. It inserts
+PEFT into the last two pretrained DINOv3 transformer blocks. There is no temporal
+model, calendar input, weather input, or station metadata input. Station/year and
+labels are used only for splitting, label-budget sampling and training-only prior
+estimation.
 
-```text
-current 10X image -> tiles -> original pretrained frozen DINOv3
- -> mean dense descriptors within each tile -> mean tiles
- -> parameter-free LayerNorm -> residual adapter -> small MLP -> 7 BBCH classes
-```
+| Method | Visual encoder changes | Default adapter weights, ViT-B / two blocks |
+| --- | --- | ---: |
+| `none` | Frozen pretrained encoder | 0 |
+| `lora` | Rank-3 LoRA in Q and V of each selected block | 18,432 |
+| `standard` | Trainable width-6 parallel FFN bottleneck | 18,432 |
+| `transition` | Width-6 parallel FFN bottleneck with transition prior | 18,432 |
 
-No temporal windows, calendar/weather/location inputs, or metadata fusion are
-used. Station/year and stage labels are used only for training splits, label
-subsampling, and basis construction. Inference needs one image's cached features.
+All four use the same learned dense-patch/tile pooling and MLP:
+LayerNorm -> Linear(768,128) -> GELU -> Dropout -> Linear(128,7).
+The head and pooling receive identical initial weights for a given fold/seed.
+Frozen backbone parameters, including all norms and pretrained LayerScale, stay
+frozen and in evaluation mode; new pooling/head parameters train normally.
 
-The shared label builder, LOSO scheduler, ordinal loss, and frozen feature
-precomputation are imported/reused from `DINOv3_BBCH/`. Existing model files are
-not modified. Run the commands below from the repository root. 
+The standard branch is a minimal **AdaptFormer-style parallel bottleneck**, not
+an exact reproduction of all AdaptFormer settings. LoRA implements
+`Wx + (alpha/r) B A x` with frozen `W`, trainable `A`, initially zero `B`, and
+Q/V targets only. No extra `peft` dependency is needed for these explicit modules.
+See [LoRA](https://arxiv.org/abs/2106.09685),
+[AdaptFormer](https://arxiv.org/abs/2205.13535), and
+[HF DINOv3](https://huggingface.co/docs/transformers/model_doc/dinov3).
 
-## 1. Dependencies and label/fold audit
+## Transition adapter
+
+Before adapting each fold, the **unmodified pretrained encoder** processes only
+the selected training images with deterministic tiling and no augmentation.
+For each adapted block, a temporary hook reads its actual `norm2` output, the
+input to its pretrained FFN. CLS and patch activations are averaged per tile
+(register tokens excluded), then tiles are averaged per image. No additional
+normalization is applied to these image summaries.
+
+Training-only stage prototypes are averaged within station-year. Differences
+between adjacent stages are averaged across years within station and then equally
+across physical stations. SVD of these supported mean differences yields a
+separate orthonormal `A0` for each block, in that block's coordinates. With seven
+classes the maximum transition rank is six. Missing boundaries are never bridged;
+if supported rank is below the requested width the run fails with an explanation.
+It does not fill missing directions with noise.
+
+For normalized tokens $z$, the adapter computes:
+
+$$
+\begin{aligned}
+A &= A_0 + E \\
+\delta &= B \, \operatorname{GELU}(A z) \\
+\mathbf{y}_{\text{block}} &= \mathbf{y}_{\text{orig}} + \delta \\
+\mathcal{L} &= \mathcal{L}_{\text{hybrid\_BBCH}} + \lambda_{\text{prior}} \cdot \frac{1}{L} \sum_{l=1}^{L} \|E_l\|_F^2
+\end{aligned}
+$$
+
+`A0` is a frozen buffer, `E` starts at zero, and `B` starts at zero. Standard
+adapters use a random trainable down-projection and the same zero up-projection.
+Both branches are added outside the frozen FFN's LayerScale/drop-path. Every
+PEFT arm therefore initially preserves the pretrained encoder function. These
+are hypotheses to evaluate; accuracy superiority and novelty are not established.
+The four arms compare full recipes. Separate random/PCA priors and a no-prior-loss
+ablation would be needed to isolate transition information from regularization.
+
+## Run on the remote machine
+
+After copying/syncing this folder:
 
 ```bash
 python -m pip install -r Adapter_BBCH/requirements.txt
 
+# Metadata/fold inspection: no download, model load, or output writes.
 python Adapter_BBCH/run_adapter_training.py \
-  --config Adapter_BBCH/config.yaml \
-  --dry-run
-```
+  --config Adapter_BBCH/config/config.yaml --dry-run
 
-Dry-run prints station/stage counts and fold count without loading features,
-downloading a backbone, training, or writing experiment files. Do not hard-code
-the older handoff's station count: inspect the actual discovery first, then
-optionally pass `--expected-stations N` to subsequent commands.
-
-This pipeline excludes OffSeason and targets only current-day images. It does
-not apply historical temporal-window coverage or station-stage training filters.
-All control arms receive exactly the same images and folds.
-
-## 2. Build a frozen feature cache once
-
-You may reuse an existing cache **only if its backbone is the original public
-pretrained DINOv3**, with no supervised updates. A cache from a fine-tuned LOSO
-fold must not be shared across folds. This runner checks the cache's recorded
-backbone/pretraining metadata and rejects local backbone paths or explicit
-fine-tuning markers; those checks cannot detect falsified cache metadata.
-
-Otherwise use the shared precomputation script:
-
-```bash
-python DINOv3_BBCH/precompute_multiscale_embeddings.py \
-  --label-path labeling_bbch_iso_dates.csv \
-  --data-path data \
-  --out-dir results_adapter_frozen_cache \
-  --image-backbone facebook/dinov3-vitb16-pretrain-lvd1689m \
-  --camera AUTO --stream micro \
-  --preplant-days 0 --postharvest-days 0 \
-  --transition-days 2 --date-tolerance-days 5 \
-  --tile-streams micro --tile-pooling attention \
-  --tile-size 224 --tile-stride 112 --max-tiles 0 \
-  --vit-image-size 224 \
-  --dense-features --dense-grid-size 2 --dense-include-cls \
-  --embedding-dtype float16 --amp auto \
-  --batch-size 128 --image-batch-size 8 --num-workers 8 \
-  --device cuda
-```
-
-First extraction may require Hugging Face model access. Here `--tile-pooling
-attention` tells the shared extractor to store separate tile features; **this
-pilot does not train an attention pooler**. Dense descriptors (CLS plus compact
-patch grid) and tiles are averaged with fixed weights. This deliberately keeps
-basis and inference coordinates identical, at the cost of learned spatial
-selection. No spatial region is treated as an independent labeled image.
-
-Augmented cache views are not used by this first pilot. Do not compare it with a
-baseline using a different pooling scheme as evidence for the adapter alone.
-
-## 3. Configure and run one fold with all five controls
-
-Edit `Adapter_BBCH/config.yaml` to set the cache path, output directory, folds,
-adapter settings, label budget, and training settings. Set `label_percentage`
-to a percentage greater than 0 and at most 100; the supplied file defaults to
-100%. The legacy `label_fraction` setting remains supported, where `0.25` means
-25%. The supplied file contains all training options and uses the same defaults
-as the CLI examples.
-
-```bash
+# Recommended initial check: one fold, all four methods, full labels.
 python Adapter_BBCH/run_adapter_training.py \
-  --config Adapter_BBCH/config.yaml
+  --config Adapter_BBCH/config/config.yaml \
+  --fold-id 1 --out-dir results_adapter_bbch_blocks_smoke
+
+# Complete LOSO, full labels.
+python Adapter_BBCH/run_adapter_training.py --config Adapter_BBCH/config/config.yaml
+
+# Complete LOSO, quarter / half labels.
+python Adapter_BBCH/run_adapter_training.py --config Adapter_BBCH/config/config25.yaml
+python Adapter_BBCH/run_adapter_training.py --config Adapter_BBCH/config/config50.yaml
+
+# Existing orchestrator runs all three YAML files sequentially.
+bash Adapter_BBCH/orchestrator.sh
 ```
 
-Configuration precedence is: parser defaults, then YAML, then explicit CLI
-options. An explicit `--label-percentage` or legacy `--label-fraction` overrides
-either label-budget spelling in YAML. A YAML file cannot specify both settings,
-and a CLI command cannot specify both options. YAML loading is explicit through
-`--config`; CLI-only invocation remains supported. Relative data/cache/output
-paths are resolved from the current working directory, so run from the
-repository root, or use absolute paths.
+DINOv3 requires access to the gated public model and an authenticated HF token.
+The runner resolves the pretrained HF commit and pins it across folds, methods,
+and inference. Local supervised backbone paths are rejected for this experiment.
+The resolved commit is recorded in checkpoints; frozen public weights are not
+duplicated in every checkpoint.
 
-The file is a flat mapping. Keys use underscores (`fold_id`) or hyphens
-(`fold-id`). `methods` is a YAML list: `[all]` or `[transition, random, pca]`.
-Booleans use `true`/`false`; `expected_stations: null` leaves the station-count
-check disabled. Unknown/duplicate keys, invalid types/choices, and invalid budgets
-are rejected. Resolved settings, including CLI overrides, are saved in
-`run_config.json` and each selected checkpoint.
+Paths in YAML are relative to the working directory. Explicit CLI options override
+YAML. `methods: [all]` expands to the four methods above. The old `random`, `pca`
+and `learned` method names belong to the preserved cached pilot and are rejected
+by this runner. `embedding_cache` is also rejected: internal adapters cannot train
+from final cached embeddings.
 
-For a one-off override without editing the file:
+The supplied configs run full LOSO (`fold_id: 0`) at 25%, 50%, and 100%, each to a
+fresh output directory. The default CLI without a config runs one fold. For clean
+training-seed repeats, keep both `fold_seed` and `label_seed` fixed and change only
+`seed` and `out_dir`. `label_seed + fold_id` determines nested label subsets;
+`seed + fold_id` determines initialization and training randomness. Use the same
+label seed for matched budget comparisons. Tune hyperparameters,
+including `prior_lambda`, on validation stations only.
+
+## Memory and input policy
+
+All arms use 224-pixel tiles, stride 112, **at most eight deterministically
+selected tiles per image**, and compact 2x2 patch features plus CLS. The tile cap
+is identical for prior estimation, training, validation and inference. This
+differs from the earlier all-tile frozen-cache pilot, so these new metrics should
+be compared within this experiment. `max_tiles: 0` retains all tiles and may need
+substantially more memory. With fewer than eight tiles all available tiles are
+used. Training augmentation is off in the supplied configs.
+
+Default image batch size is 2 with 8 accumulation steps (16 images per full
+optimizer update). `tile_batch_size: 8` chunks encoder calls, but autograd still
+retains the adapted-layer graphs until backward; chunking does not remove that
+memory cost. For OOM, first lower `batch_size` and increase `accumulation_steps`;
+use the same settings for every method. Keep tile geometry/cap fixed across arms.
+`amp: bf16` is optional on supported CUDA GPUs; `fp16` enables gradient scaling;
+`none` is FP32. This runner is single-device eager PyTorch: no DDP, compile, or
+gradient checkpointing. The block wrapper relies on the HF DINOv3 `norm2`/Q/V
+interfaces and fails on unsupported models rather than silently adapting elsewhere.
+
+## Leakage, budgets and outputs
+
+LOSO still holds out physical stations, with separate validation stations.
+Only selected training labels enter prior construction, adapter fitting and
+pooling/head fitting. Validation/test remain complete. Label subsets are nested
+for a fixed label seed using the existing station/year/stage-stratified permutation
+policy. Ceil rounding and at least one image per stratum can raise realized
+coverage above the requested percentage. Because this sampling uses stage labels
+to define strata, it simulates label budgets rather than a label-blind acquisition
+policy. Unreadable images fail the run; they are never silently removed.
+
+Validation macro-F1 over all seven classes selects the checkpoint; test is
+evaluated once afterward. Each method writes `history.csv`, `best_model.pt`,
+validation/test predictions and metrics, confusion matrices and per-class metrics.
+Each fold records station splits, the exact selected training labels, per-layer
+basis support and basis tensors. Root outputs include `run_config.json`,
+`all_test_metrics.csv`, `combined_test_predictions.csv`, `comparison_summary.csv`
+and `aggregate_<method>.json`. Parameter counts and requested/realized label
+coverage are recorded. Counts summed across LOSO training folds repeat images;
+they are not unique annotation counts.
+
+Checkpoints contain trained pooling/head/adapter tensors plus transition-prior
+buffers, model configuration and the frozen base's HF commit. They are a new
+format and cannot be opened by the old cached-feature inference tool.
 
 ```bash
-python Adapter_BBCH/run_adapter_training.py \
-  --config Adapter_BBCH/config.yaml \
-  --fold-id 0 --methods transition random pca \
-  --label-percentage 25 --out-dir results_adapter_budget25 --device cuda
+python Adapter_BBCH/infer_image.py \
+  --checkpoint results_adapter_bbch_blocks_100/fold_1/transition/best_model.pt \
+  --image data/02.02/2015/K1/10X/example.jpeg --device cuda
 ```
 
-For backward compatibility, the percentage option can instead be written
-`--label-fraction 0.25`.
+Inference needs just an image, the checkpoint, and access to the pinned base
+weights. Labels, dates and station identifiers are not model inputs.
 
-If YAML enables a boolean, `--no-dry-run` or `--no-ignore-status-csv` can disable
-it. This configuration applies to the adapter training runner; shared DINOv3
-feature precomputation in section 2 retains its existing CLI.
+## Optional remote tests and old pilot
 
-The in-memory classifier is small; CPU is sufficient for this phase, and
-`--device cuda` is supported. The backbone does not run during adapter training.
-Use a fresh output directory for every invocation; existing experiments are
-never overwritten or implicitly resumed. `--methods transition random pca` selects
-individual arms. Defaults run one fold and all arms.
-
-| Method | Adapter input projection | Trainable adapter weights |
-|---|---|---|
-| `none` | No adapter; identical MLP head | 0 |
-| `transition` | Fixed basis from training station-year stage differences | `D*r` |
-| `random` | Fixed orthonormal random basis | `D*r` |
-| `pca` | Fixed principal directions of normalized training features | `D*r` |
-| `learned` | Same initialization as random, but projection is learned too | `2*D*r` |
-
-All arms use the same head initialization, training-label subset, batch ordering,
-loss, and validation checkpoint criterion. The fixed-basis controls match
-trainable parameter counts exactly. The learned bottleneck has more parameters;
-it is an architectural control, not a parameter-matched one. Adapter up-projections
-start at zero, so every arm starts with identical predictions. The learned
-down-projection begins receiving gradients after the up-projection changes.
-
-`learned` is a nonlinear residual bottleneck adapter, **not backbone LoRA**.
-Ordinary Q/V LoRA needs a separate end-to-end image-training experiment; it cannot
-be trained from these frozen final embeddings. No LoRA comparison is claimed here.
-
-## Basis estimation
-
-For every fold, split stations before selecting training labels or fitting bases:
-
-1. Apply the same parameter-free LayerNorm to every image vector used in either
-   basis estimation or model inference.
-2. Average selected training images within each station-year and hard BBCH stage.
-   A prototype needs `--min-stage-images` images. The classifier still uses the
-   original soft boundary targets, remapped to the seven in-season classes.
-3. Subtract adjacent stage prototypes within a station-year. Missing stages are
-   not bridged; e.g., BBCH1 is never compared directly to BBCH3.
-4. Average valid differences across years within each physical station, then
-   average equally across stations. Require `--min-transition-stations` distinct
-   training stations for each transition.
-5. Stack supported mean transitions as columns of `D` and take its left singular
-   vectors. Freeze the first `r` vectors as rows of the input projection `A`.
-6. Train `h' = h + B GELU(A h)` and the MLP. Here `h` is already normalized.
-
-There are at most six supported mean directions for seven classes. If their
-numerical rank is below the requested rank, all fixed controls use that same
-effective rank. No random directions are added to fill the transition basis.
-If no nonzero supported transition exists, the run fails with an explanation.
-The basis report records station support, mean norms, variation between stations,
-singular values, and the effective rank. This first version does not apply a
-variance penalty or reliability weighting.
-
-Two limitations matter for interpretation:
-
-- The residual adapter restricts the inputs to its correction; the MLP still sees
-  the original full feature. This does not enforce station invariance.
-- With complete balanced prototypes and full rank, adjacent differences span the
-  same space as centered class prototypes. This pilot therefore cannot by itself
-  establish a uniquely ordinal mechanism. Before making that claim, add a
-  supervised class-prototype contrast control and compare truncated ranks.
-
-## Full LOSO and label-budget experiments
-
-After the one-fold pipeline check, use `--fold-id 0` with a new `--out-dir` for
-complete station-held-out evaluation. Keep `--fold-seed 42` fixed across methods
-and budgets; repeat with predefined training seeds, not seeds picked by test score.
-
-Use `--label-percentage 10`, `25`, `50`, and `100` in separate output directories.
-Both prototype estimation/PCA and supervised training see **only** that selected
-training subset. Validation and test remain complete. For a fixed seed, selected
-subsets are nested across budgets. Sampling is stratified by station-year and
-stage, retaining at least one example per group; it uses the full labels to define
-strata and is not an annotation-acquisition policy. The sampler selects
-`ceil((requested percentage / 100) × group size)` images per group. Group rounding
-and the minimum of one image can therefore increase realized coverage, especially for
-rare stages; the requested percentage is not an exact global sample count. The
-requested and realized percentages, selected and full training-image counts, and
-sampling policy are saved in split reports, basis reports, per-method metrics, and
-checkpoints. Sparse subsets may require a predeclared lower
-`--min-stage-images`; compare the same setting across methods and never fill
-prototype gaps using withheld labels.
-
-The nested sampler replaces the earlier independent random draws for budgets
-below 100%; the full-data selection is unchanged. Reports include its policy
-version and effective per-fold sampling seed (`seed + fold_id`). Aggregate
-training-image counts sum the fold-specific sets and include repeated images
-across LOSO folds; they are not unique annotation counts.
-
-Checkpoints are selected by validation macro-F1 across all seven fixed classes.
-Test is evaluated once per method/fold after selection. Do not choose rank,
-support thresholds, label exclusions, or other settings from held-out test scores.
-One-fold results validate the workflow; they do not establish generalization.
-
-## Outputs
-
-```text
-out_dir/
-  run_config.json                 # args, label SHA256, cache SHA256/settings
-  image_metadata.csv
-  fold_assignments.csv
-  fold_1/
-    split_info.json               # split stations/counts and requested/realized label coverage
-    selected_training_labels.csv
-    basis_report.json
-    bases.pt
-    transition/                   # and none/random/pca/learned
-      best_model.pt               # selected model, basis, config, provenance
-      history.csv
-      val_metrics.json
-      val_predictions.csv         # selected epoch, not the final epoch
-      test_predictions.csv
-      test_metrics.json
-      confusion_matrix.csv
-      per_class_metrics.csv
-  all_test_metrics.csv
-  combined_test_predictions.csv
-  aggregate_<method>.json           # requested and realized coverage by method
-  comparison_summary.csv             # requested/realized coverage for budget comparisons
-```
-
-The comparison includes pooled accuracy/macro-F1, station-mean/std/min metrics,
-stage MAE, quadratic kappa, and plus/minus-one accuracy. All seven classes are
-included in macro-F1 even when a station has no examples of one class; keep this
-definition fixed across comparisons. Partial runs are marked `complete_loso=false`.
-The run does not currently support resume or aggregate prior output directories.
-
-Cache matching uses the portable `station/year/camera/scale/filename` suffix,
-so Windows- and Linux-rooted paths can match. Missing cached target images fail
-the run; validation/test are never silently dropped. Inference verifies the
-extraction configuration against the checkpoint. Cache metadata is descriptive;
-retain the original extraction command/code and cache SHA256 for provenance.
-
-## Cached single-image inference
-
-Use the same backbone and extraction settings for any new image cache:
+No training or tests were run locally for this change. New synthetic tests use a
+tiny randomly initialized DINOv3 with no downloads; they check zero-initialization,
+frozen-weight gradients, adapter budgets, intermediate-coordinate estimation,
+checkpoint reconstruction and config behavior. Run them before the remote pilot:
 
 ```bash
-python Adapter_BBCH/infer_cached_image.py \
-  --checkpoint results_adapter_bbch_pilot/fold_1/transition/best_model.pt \
-  --embedding-cache results_adapter_frozen_cache/vit_embeddings.pt \
-  --image-path data/02.02/2015/K1/10X/ACTUAL_FILENAME.jpeg
+python -m unittest discover -s Adapter_BBCH/tests -p 'test_block*.py' -v
 ```
 
-Replace the example with a real image present in the cache. This first version
-does not provide a raw-image inference wrapper; the shared extractor creates its
-features. Adapter inference itself uses no labels, dates, or station metadata.
-
-## Optional remote unit and synthetic training checks
-
-```bash
-python -m unittest discover -s Adapter_BBCH/tests -p 'test_*.py' -v
-```
-
-Tests cover station/year balancing, unsupported transitions, selected-label
-sampling, frozen/trainable gradients, zero-residual initialization, checkpoint
-reconstruction, cache and split guards, and a two-epoch synthetic run through all
-five methods. They do not download a backbone or validate real-data accuracy.
+The earlier post-pooling pilot remains available as `run_cached_training.py`,
+with original configs copied under `config_cached/`, old inference through
+`infer_cached_image.py`, and instructions in [README_cached.md](README_cached.md).
+The earlier tests now import the cached runner explicitly.

@@ -1,1 +1,2 @@
 -r ../DINOv3_BBCH/requirements.txt
+torch>=2.3
