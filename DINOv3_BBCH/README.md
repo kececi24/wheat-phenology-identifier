@@ -10,7 +10,7 @@ features instead of reducing every crop to one global vector.
 
 ## Architecture
 
-![DINOv3 wheat phenology model overview](model_overview.svg)
+![DINOv3 wheat phenology model overview](figures/dinov3_bbch_network_pipeline.png)
 
 For the usual `--stream micro` setup:
 

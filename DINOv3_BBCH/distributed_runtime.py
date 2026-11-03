@@ -76,7 +76,7 @@ def read_gate_value(gate_logit):
     if gate_logit is None:
         return None
 
-    value = gate_logit.detach():
+    value = gate_logit.detach()
 
     if isinstance(value, DTensor):
         value = value.full_tensor()
