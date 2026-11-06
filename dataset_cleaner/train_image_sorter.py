@@ -130,6 +130,7 @@ if __name__ == "__main__":
 
     splitter = GroupKFold(n_splits=config["data"]["folds"])
 
+    save_dir.mkdir(parents=True, exist_ok=True)
     with(save_dir / "loaded_config.yaml").open("w", encoding="utf-8") as file:
         yaml.safe_dump(config, file)
     print(f"Saved loaded configuration at: {save_dir}")
