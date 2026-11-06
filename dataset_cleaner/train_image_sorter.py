@@ -130,11 +130,16 @@ if __name__ == "__main__":
 
     splitter = GroupKFold(n_splits=config["data"]["folds"])
 
+    with(save_dir / "loaded_config.yaml").open("w", encoding="utf-8") as file:
+        yaml.safe_dump(config, file)
+    print(f"Saved loaded configuration at: {save_dir}")
+
     for fold, (train_indices, val_indices) in enumerate(
         splitter.split(records, groups=groups),
         start=1
     ):
         fold_dir = save_dir / f"fold_{fold}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
 
         fold_seed = config["training"]["seed"] + fold - 1
         torch.manual_seed(fold_seed)
@@ -214,7 +219,7 @@ if __name__ == "__main__":
         with(fold_dir / "split.csv").open("w", newline="", encoding="utf-8") as file:
             writer = csv.DictWriter(
                 file,
-                fieldnames=["path", "station", "year", "magnification", "split"]
+                fieldnames=["path", "station", "year", "camera", "magnification", "split"]
             )
             writer.writeheader()
             writer.writerows({**record, "split": "train"} for record in train_records)
@@ -305,6 +310,7 @@ if __name__ == "__main__":
                             
                     record_offset += batch_size
 
+            val_acc = correct / total
             print("Validation Loss: ", val_loss / total)
             print("Validation Accuracy: ", correct / total)
             if args.verbose:
@@ -334,7 +340,16 @@ if __name__ == "__main__":
                     print(f"Patience for epoch ran out at epoch: {epoch + 1}")
                     break
 
-    with(save_dir / "loaded_config.yaml").open("w", encoding="utf-8") as file:
-        yaml.safe_dump(config, file)
-        print(f"Saved loaded configuration at: {save_dir}")
+        summary = {
+            "fold": fold,
+            "seed": fold_seed,
+            "best_epoch": epoch + 1,
+            "validation_loss": val_average_loss,
+            "validation_accuracy": val_acc,
+            "train_images": len(train_records),
+            "validation_images": len(val_records)
+        }
+
+        with(fold_dir / "summary.yaml").open("w", encoding="utf-8") as file:
+            yaml.safe_dump(summary, file)
     
