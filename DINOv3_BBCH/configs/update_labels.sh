@@ -36,15 +36,15 @@ for folder in "${FOLDERS[@]}"; do
   while IFS= read -r -d '' file; do
     if [ "$HAS_YQ" = true ]; then
       # Safely update yaml key in-place using yq
-      yq eval -i ".pipeline.label_path = \"${NEW_VALUE}\"" "$file"
+      yq eval -i ".pipeline.label_path = ${NEW_VALUE}" "$file"
       echo "  [yq] Updated: $(basename "$file")"
     else
       # Fallback using sed (handles nested/indented YAML keys)
       # Replaces 'label_path: ...' with the new value
       if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' -E "/^[[:space:]]*label_path:/s|:.*|: \"${NEW_VALUE}\"|" "$file"
+        sed -i '' -E "/^[[:space:]]*label_path:/s|:.*|: ${NEW_VALUE}|" "$file"
       else
-        sed -i -E "/^[[:space:]]*label_path:/s|:.*|: \"${NEW_VALUE}\"|" "$file"
+        sed -i -E "/^[[:space:]]*label_path:/s|:.*|: ${NEW_VALUE}|" "$file"
       fi
       echo "  [sed] Updated: $(basename "$file")"
     fi
