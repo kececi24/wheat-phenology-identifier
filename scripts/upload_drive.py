@@ -82,8 +82,41 @@ def upload_file(service, file_path, target_folder_id=None):
     print(f"  Done. File ID: {response.get('id')}")
 
 
+def get_existing_drive_files(service, folder_id=None):
+    """Retrieves a set of all file names already in the target Drive folder."""
+    query_parts = ["trashed = false"]
+    if folder_id:
+        query_parts.append(f"'{folder_id}' in parents")
+    else:
+        query_parts.append("'root' in parents")
+        
+    query = " and ".join(query_parts)
+    existing_files = set()
+    page_token = None
+
+    while True:
+        response = (
+            service.files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="nextPageToken, files(name)",
+                pageToken=page_token,
+            )
+            .execute()
+        )
+        for f in response.get("files", []):
+            existing_files.add(f["name"])
+
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    return existing_files
+
+
 def zip_depth1_and_upload(source_dir, drive_folder_id=None):
-    """Zips depth-1 folders in source_dir and uploads them."""
+    """Zips depth-1 folders in source_dir and uploads only missing ones."""
     source_dir = os.path.abspath(source_dir)
     service = get_drive_service()
 
@@ -96,10 +129,20 @@ def zip_depth1_and_upload(source_dir, drive_folder_id=None):
         print(f"No subdirectories found at depth 1 in: {source_dir}")
         return
 
-    print(f"Found {len(subdirs)} folders to process in '{source_dir}'.\n")
+    # Check which archives already exist in Drive
+    print("Checking existing files on Google Drive...")
+    existing_files = get_existing_drive_files(service, drive_folder_id)
+    print(f"Found {len(existing_files)} existing files in the Drive folder.\n")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         for folder in subdirs:
+            target_zip_name = f"{folder}.zip"
+
+            # Skip if already uploaded
+            if target_zip_name in existing_files:
+                print(f"[SKIP] '{target_zip_name}' already exists in Google Drive.")
+                continue
+
             full_path = os.path.join(source_dir, folder)
             archive_base = os.path.join(temp_dir, folder)
 
@@ -113,8 +156,7 @@ def zip_depth1_and_upload(source_dir, drive_folder_id=None):
             upload_file(service, zip_path, drive_folder_id)
             print("-" * 50)
 
-    print("All depth-1 folders zipped and uploaded.")
-
+    print("All depth-1 folders processed and uploaded.")
 
 if __name__ == "__main__":
     # Reads source and destination from .env with fallback defaults
