@@ -2,9 +2,9 @@
 """Inspect an image, station folder, or dataset root for image quality issues.
 
 Examples:
-    python scripts/clean_dataset.py image.jpeg
-    python scripts/clean_dataset.py data/01.01
-    python scripts/clean_dataset.py data --apply
+    python -m dataset_cleaner.clean_dataset image.jpeg
+    python -m dataset_cleaner.clean_dataset data/01.01 --repair-jpeg
+    python -m dataset_cleaner.clean_dataset data --repair-jpeg --apply
 """
 
 import argparse
@@ -12,6 +12,7 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
 from functools import partial
+from io import BytesIO
 import math
 import os
 from pathlib import Path
@@ -24,6 +25,42 @@ from PIL import Image
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 QUARANTINE_FOLDERS = {"bad_images", "truncated_images", "corrupt_images"}
 BLUR_PRESETS = {"conservative": 15.0, "medium": 45.0, "aggressive": 100.0}
+
+
+def repair_jpeg_end(path):
+    """Append a missing JPEG end marker only after strict candidate decoding."""
+    with path.open("rb") as source:
+        if source.read(2) != b"\xff\xd8":
+            return False
+        source.seek(-2, os.SEEK_END)
+        if source.read() == b"\xff\xd9":
+            return False
+        original_stat = os.fstat(source.fileno())
+        source.seek(0)
+        candidate = source.read() + b"\xff\xd9"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with Image.open(BytesIO(candidate)) as image:
+            image.verify()
+        with Image.open(BytesIO(candidate)) as image:
+            image.load()
+
+    with path.open("r+b") as destination:
+        current_stat = os.fstat(destination.fileno())
+        original_fingerprint = (
+            original_stat.st_dev, original_stat.st_ino,
+            original_stat.st_size, original_stat.st_mtime_ns,
+        )
+        current_fingerprint = (
+            current_stat.st_dev, current_stat.st_ino,
+            current_stat.st_size, current_stat.st_mtime_ns,
+        )
+        if current_fingerprint != original_fingerprint:
+            raise ValueError("Source changed during JPEG repair")
+        destination.seek(original_stat.st_size)
+        destination.write(b"\xff\xd9")
+    return True
 
 
 def laplacian_variance(array):
@@ -180,15 +217,25 @@ def move_bad_image(source, station, fingerprint):
     return destination
 
 
-def inspect_task(task, **options):
+def inspect_task(task, repair_jpeg=False, **options):
     path, station = task
+    repaired = False
     try:
         stat = path.stat()
         fingerprint = stat.st_size, stat.st_mtime_ns
     except OSError as error:
-        return path, station, None, "ERROR", str(error)
+        return path, station, None, "ERROR", str(error), repaired
+    if repair_jpeg:
+        try:
+            repaired = repair_jpeg_end(path)
+            if repaired:
+                stat = path.stat()
+                fingerprint = stat.st_size, stat.st_mtime_ns
+        except (OSError, ValueError, SyntaxError, Image.DecompressionBombError,
+                Image.DecompressionBombWarning) as error:
+            return path, station, fingerprint, "CORRUPT", f"JPEG repair failed {error}", repaired
     status, detail = analyze_image(path, **options)
-    return path, station, fingerprint, status, detail
+    return path, station, fingerprint, status, detail, repaired
 
 
 def main(argv=None):
@@ -204,7 +251,11 @@ def main(argv=None):
     parser.add_argument("--local-blur", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--workers", "-w", type=int, default=min(4, os.cpu_count() or 1))
     parser.add_argument("--recursive", "-r", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--no-repair", action="store_true", help=argparse.SUPPRESS)
+    repair = parser.add_mutually_exclusive_group()
+    repair.add_argument("--repair-jpeg", action=argparse.BooleanOptionalAction, default=True,
+                        help="Repair missing JPEG end markers in place before quality checks")
+    repair.add_argument("--no-repair", dest="repair_jpeg", action="store_false", help=argparse.SUPPRESS)
+    parser.set_defaults(repair_jpeg=False)
     args = parser.parse_args(argv)
     if args.input and args.legacy_input:
         parser.error("Supply one input path")
@@ -216,12 +267,12 @@ def main(argv=None):
     if not math.isfinite(threshold) or threshold < 0 or args.workers < 1:
         parser.error("Blur threshold must be finite and nonnegative, and workers must be positive")
     options = dict(blur_threshold=threshold, monochrome=args.monochrome,
-                   local_blur=args.local_blur, rigorous=args.rigorous)
+                   local_blur=args.local_blur, rigorous=args.rigorous, repair_jpeg=args.repair_jpeg)
     try:
         if target.is_file():
             if target.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 parser.error("Unsupported image extension")
-            status, _ = analyze_image(target, **options)
+            _, _, _, status, _, _ = inspect_task((target, None), **options)
             print("GOOD" if status == "OK" else "BAD")
             return 0
         if not target.is_dir():
@@ -237,8 +288,11 @@ def main(argv=None):
         counts = Counter()
         with pool as executor:
             results = executor.map(inspect, tasks, chunksize=32) if executor else map(inspect, tasks)
-            for path, station, fingerprint, status, detail in results:
+            for path, station, fingerprint, status, detail, repaired in results:
                 counts["scanned"] += 1
+                if repaired:
+                    counts["repaired"] += 1
+                    print(f"REPAIRED {path} [JPEG end marker appended]", flush=True)
                 if status == "OK":
                     continue
                 counts["bad"] += 1
@@ -253,7 +307,8 @@ def main(argv=None):
                         counts["moved"] += 1
                         print(f"MOVED {destination}", flush=True)
         print(f"Scanned {counts['scanned']} | Good {counts['scanned'] - counts['bad']} | "
-              f"Bad {counts['bad']} | Moved {counts['moved']} | Skipped {counts['skipped']}")
+              f"Bad {counts['bad']} | Repaired {counts['repaired']} | "
+              f"Moved {counts['moved']} | Skipped {counts['skipped']}")
         return int(counts["skipped"] > 0)
     except (OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")

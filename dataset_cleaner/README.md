@@ -26,11 +26,20 @@ python -m dataset_cleaner.clean_dataset data/01.01 --apply
 python -m dataset_cleaner.clean_dataset data --apply
 ```
 
-Moves preserve filenames and the path within the station. For example, `data/01.01/2015/K1/1X/photo.jpeg` moves to `data/01.01/bad_images/2015/K1/1X/photo.jpeg`. Existing destinations and files changed during inspection are skipped. Scans exclude `bad_images`, `truncated_images`, and `corrupt_images` directories. Inspection preserves image bytes, and station folders are identified by year subfolders or images directly inside them.
+Moves preserve filenames and the path within the station. For example, `data/01.01/2015/K1/1X/photo.jpeg` moves to `data/01.01/bad_images/2015/K1/1X/photo.jpeg`. Existing destinations and files changed during inspection are skipped. Scans exclude `bad_images`, `truncated_images`, and `corrupt_images` directories. Station folders are identified by year subfolders or images directly inside them.
+
+Use `--repair-jpeg` to repair missing JPEG end markers in place before quality checks. The command validates a candidate with the appended marker using strict Pillow decoding, then appends the two marker bytes to the original file. Repair works for single images and folders and can be used independently of `--apply`. Folder output reports repaired files and their count. Single-image output remains `GOOD` or `BAD` after repair. The quality checks still run after repair, so an image with another problem can be moved by `--apply`. An end marker repair cannot reconstruct missing image content.
+
+```powershell
+python -m dataset_cleaner.clean_dataset path/to/image.jpeg --repair-jpeg
+python -m dataset_cleaner.clean_dataset data --repair-jpeg
+python -m dataset_cleaner.clean_dataset data --repair-jpeg --apply
+```
 
 | Option | Behavior |
 | --- | --- |
 | `--apply` | Move bad images found during a folder scan. |
+| `--repair-jpeg` | Repair missing JPEG end markers in place before checking image quality. |
 | `--mode conservative\|medium\|aggressive` | Select blur sensitivity. The default is `medium`. |
 | `--blur-threshold FLOAT` | Override the preset grid blur threshold. |
 | `--no-local-blur` | Disable local blur detection, which is enabled by default. |
