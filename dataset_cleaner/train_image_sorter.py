@@ -89,8 +89,6 @@ if __name__ == "__main__":
 
 
     config_path = args.config.resolve()
-    script_dir = Path(__file__).resolve().parent
-    project_root = script_dir.parent
     
     with config_path.open(encoding="utf-8") as file:
         config = yaml.safe_load(file)
@@ -131,9 +129,8 @@ if __name__ == "__main__":
     splitter = GroupKFold(n_splits=config["data"]["folds"])
 
     save_dir.mkdir(parents=True, exist_ok=True)
-    with(save_dir / "loaded_config.yaml").open("w", encoding="utf-8") as file:
-        yaml.safe_dump(config, file)
-    print(f"Saved loaded configuration at: {save_dir}")
+    completed_config = save_dir / "loaded_config.yaml"
+    completed_config.unlink(missing_ok=True)
 
     for fold, (train_indices, val_indices) in enumerate(
         splitter.split(records, groups=groups),
@@ -178,7 +175,7 @@ if __name__ == "__main__":
         precision = performance["mixed_precision"]
 
         if precision not in {"none", "fp16"}:
-            raise ValueError(f"Unsupported mixed precission: {precision}")
+            raise ValueError(f"Unsupported mixed precision: {precision}")
 
         use_amp = device.type == "cuda" and precision == "fp16"
         scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -215,6 +212,7 @@ if __name__ == "__main__":
 
         best_val_loss = float("inf")
         best_epoch = 0
+        best_val_acc = 0.0
         patience = config["training"]["patience"]
 
         with(fold_dir / "split.csv").open("w", newline="", encoding="utf-8") as file:
@@ -323,6 +321,7 @@ if __name__ == "__main__":
             if val_average_loss < best_val_loss:
                 best_val_loss = val_average_loss
                 best_epoch = epoch
+                best_val_acc = val_acc
 
                 model.save_pretrained(fold_dir)
                 processor.save_pretrained(fold_dir)
@@ -341,16 +340,21 @@ if __name__ == "__main__":
                     print(f"Patience for epoch ran out at epoch: {epoch + 1}")
                     break
 
+        if best_val_loss == float("inf"):
+            raise RuntimeError(f"Fold {fold} produced no usable validation checkpoint")
+
         summary = {
             "fold": fold,
             "seed": fold_seed,
-            "best_epoch": epoch + 1,
-            "validation_loss": val_average_loss,
-            "validation_accuracy": val_acc,
+            "best_epoch": best_epoch + 1,
+            "validation_loss": best_val_loss,
+            "validation_accuracy": best_val_acc,
             "train_images": len(train_records),
             "validation_images": len(val_records)
         }
 
         with(fold_dir / "summary.yaml").open("w", encoding="utf-8") as file:
             yaml.safe_dump(summary, file)
-    
+
+    with completed_config.open("w", encoding="utf-8") as file:
+        yaml.safe_dump(config, file)

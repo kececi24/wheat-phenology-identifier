@@ -19,7 +19,7 @@ data:
     - "27.02/2017/K1/10X"
     - "27.03/2014/K1/1X"
     - "27.03/2014/K1/10X"
-  folds: 3
+  folds: 5
 
 model:
   name: "facebook/deit-tiny-patch16-224"
@@ -35,11 +35,11 @@ training:
   device: "cuda"
 
 performance:
-  num_workers: 4
+  num_workers: 0
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
   mixed_precision: "fp16"
 
 output:
-  model_dir: "magnification_model"
+  model_dir: "magnification_ensemble_model"
