@@ -26,6 +26,7 @@ SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp
 QUARANTINE_FOLDERS = {"bad_images", "truncated_images", "corrupt_images"}
 BLUR_PRESETS = {"conservative": 15.0, "medium": 45.0, "aggressive": 100.0}
 
+LOW_CONTRAST_LIMIT = 3
 
 def repair_jpeg_end(path):
     """Append a missing JPEG end marker only after strict candidate decoding."""
@@ -87,8 +88,8 @@ def rigorous_issue(image):
     bright_percent = float(np.mean(rgb > 250) * 100)
     if bright_percent > 30:
         return "GLARE_SUSPECT", f"Saturated channel values {bright_percent:.1f}%"
-    if rgb.std(axis=(0, 1)).mean() < 15:
-        return "LOW_CONTRAST", "Mean channel standard deviation below 15"
+    if rgb.std(axis=(0, 1)).mean() < LOW_CONTRAST_LIMIT:
+        return "LOW_CONTRAST", f"Mean channel standard deviation below {LOW_CONTRAST_LIMIT}"
     gray = np.asarray(image.convert("L").resize((512, 512), Image.Resampling.BILINEAR),
                       dtype=np.float32)
     if laplacian_variance(gray) < 80:
