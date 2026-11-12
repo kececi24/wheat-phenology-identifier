@@ -1,64 +1,21 @@
 # Metadata + ExG BBCH Baseline
 
-This is a deliberately lightweight, non-DINO baseline. It predicts BBCH stages
-using:
+This directory contains the lightweight non-deep-learning baseline. It predicts BBCH phenological stages strictly using tabular meteorological data, cumulative Growing Degree Days (GDD), calendar days since sowing, geographic coordinates, and illumination-tolerant Excess Greenness ($ExG = 2g - r - b$) summary statistics over a 21-day causal rolling window modeled with `HistGradientBoostingClassifier`.
 
-- normalized latitude, longitude, and elevation;
-- temperature, precipitation, weather missingness, daily GDD, and cumulative GDD;
-- days since sowing;
-- ExG (`2g - r - b`) distribution statistics from the selected daily photo;
-- strictly causal rolling summaries over the previous 21 calendar days.
+## Documentation
 
-It reuses DINOv3's label parsing, camera selection, weather/GDD implementation,
-location table, and balanced LOSO fold generator. No learned image representation
-or future image is used.
+Full documentation, feature extraction equations, and comparative evaluation are centralized in the [`docs/`](../docs/README.md) hub:
 
-## Train all LOSO folds
+- **Baseline Architecture and Feature Pipeline**: [Baselines and Adapters Guide - Section 2](../docs/baselines-and-adapters.md#2-metadata-exg-baseline-baseline_bbch)
+  - Illumination-tolerant ExG distribution statistics (`exg_mean`, `exg_std`, percentiles, positive fraction, green dominance).
+  - Strictly causal 21-day rolling window summary statistics (mean, std, min, max, delta).
+  - Meteostat weather integration and cumulative thermal time.
+  - Multiprocessing CPU feature extraction and parallel LOSO fold execution.
+- **Central Documentation Hub**: [Documentation Index](../docs/README.md)
 
-Console parameters can be set in `Baseline_BBCH/config.yaml`; its values are
-used by default, and any explicit command-line option overrides the matching
-YAML value. The default config is loaded from beside the training script. Use
-`--config path/to/other.yaml` to select another file. YAML keys use the
-underscore form of the corresponding option (for example, `fold_workers` for
-`--fold-workers`).
+## Key Files and Entry Points
 
-```powershell
-.\.venv\Scripts\python.exe Baseline_BBCH\run_metadata_exg_training.py `
-  --label-path labeling_bbch_iso_dates.csv `
-  --data-path data `
-  --out-dir results_metadata_exg_bbch `
-  --stream micro `
-  --camera AUTO `
-  --window-days 21 `
-  --validation-groups 2 `
-  --expected-stations 15
-```
-
-The first run creates `exg_features.csv`. Later runs reuse entries whose image
-path, size, and modification time have not changed. The Meteostat cache is stored
-under the result directory unless `--weather-cache` points to an existing cache.
-By default, training includes weather features and fails if weather is missing
-for every row rather than silently presenting a zero-weather experiment as a
-weather baseline. Set `use_weather: false` in the config or pass `--no-weather`
-to skip weather fetching and omit weather features. Use `--allow-missing-weather`
-only for pipeline smoke tests when weather is enabled.
-
-For a smoke test, add `--only-fold 1`. Each fold selects the number of boosting
-iterations using validation macro-F1 and evaluates its held-out station once.
-Outputs include per-fold pickled models, metrics and predictions, combined LOSO
-predictions, the complete feature table, and `summary.json`.
-
-This baseline intentionally uses hard interval labels. Its purpose is to measure
-how much performance comes from calendar/geography/weather/greenness without a
-learned visual backbone.
-
-## Parallel execution
-
-ExG extraction is distributed across unique uncached images, and independent LOSO
-folds are trained in parallel. Both stages use all detected CPU cores by default.
-Native BLAS/OpenMP threads are limited to one inside each fold worker to prevent
-nested oversubscription. Override the process counts when needed:
-
-```powershell
---exg-workers 32 --fold-workers 15
-```
+| File | Purpose | Documentation Reference |
+| :--- | :--- | :--- |
+| `run_metadata_exg_training.py` | ExG extraction, tabular dataset assembly, and multi-threaded HistGradientBoosting training | [Baselines Guide](../docs/baselines-and-adapters.md#2-metadata-exg-baseline-baseline_bbch) |
+| `config.yaml` | Default configuration for workers, windows, and feature flags | [Baselines Guide](../docs/baselines-and-adapters.md#classification-algorithm-and-execution) |
