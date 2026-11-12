@@ -123,9 +123,10 @@ Sowing     Emergence   Tillering    Jointing     Heading      Flowering     Matu
 
 ## 5. ISO Label Files and Metadata Schema
 
-The canonical ground truth files are maintained at the repository root:
-- [labeling_bbch_iso_dates.csv](../labeling_bbch_iso_dates.csv) (canonical text reference)
-- `labeling_bbch_iso_dates.xlsx` (Excel workbook format)
+The canonical ground truth files and raw observation tables are organized in the dedicated [`labels/`](../labels/README.md) directory:
+- [`labels/labeling_bbch_iso_dates.csv`](../labels/labeling_bbch_iso_dates.csv) (canonical text reference)
+- [`labels/labeling_bbch_iso_dates.xlsx`](../labels/labeling_bbch_iso_dates.xlsx) (Excel workbook format)
+- [`labels/Fenolojik_Evreler_v3.xlsx`](../labels/Fenolojik_Evreler_v3.xlsx) (Historical raw Turkish observation table)
 
 ### Table Schema and Columns
 
@@ -234,7 +235,7 @@ Before launching embedding precomputation or model training, run the metadata sa
 
 ```bash
 python DINOv3_BBCH/metadata_sanity_check.py \
-  --label-path labeling_bbch_iso_dates.csv \
+  --label-path labels/labeling_bbch_iso_dates.csv \
   --data-path data \
   --camera AUTO \
   --stream micro

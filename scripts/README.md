@@ -21,3 +21,6 @@ Full usage guides and operational commands are centralized in the [`docs/`](../d
 | `analyze_details.py` | Audits phenological curve anomalies against milestone dates | [Tools Guide](../docs/tools-and-workflows.md#2-station-detail-analysis-analyze_detailspy) |
 | `detect_shifts.py` | Detects physical camera rotation, servicing shifts, and wind drift | [Tools Guide](../docs/tools-and-workflows.md#3-camera-shift-detection-detect_shiftspy) |
 | `summarize_all_verifications.py` | Aggregates station-level landmark verification summaries | [Tools Guide](../docs/tools-and-workflows.md#4-verification-summary-summarize_all_verificationspy) |
+| `check_folders.py` | Quick verification that 10X directories exist for each season in the label table | [Tools Guide](../docs/tools-and-workflows.md#5-station-folder-and-remote-sync-utilities) |
+| `xlsx2csv.py` | Command-line utility to convert multi-sheet Excel workbooks to clean CSV files | [Tools Guide](../docs/tools-and-workflows.md#5-station-folder-and-remote-sync-utilities) |
+| `upload_drive.py` | Google Drive automated sync and upload utility using OAuth credentials | [Tools Guide](../docs/tools-and-workflows.md#5-station-folder-and-remote-sync-utilities) |

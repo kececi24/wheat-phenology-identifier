@@ -167,7 +167,8 @@ wheat-phenology-identifier/
 │   ├── metadata_sanity_check.py     # Pre-flight data and label discovery auditor
 │   ├── distributed_runtime.py       # Distributed PyTorch FSDP2 sharded execution utilities
 │   ├── infer_cached_window.py       # Causal operational inference from historical image folder
-│   └── infer_single_image.py        # Diagnostic static-image inference utility
+│   ├── infer_single_image.py        # Diagnostic static-image inference utility
+│   └── backbone_weights.py          # Standalone image-backbone state dict loader
 ├── Adapter_BBCH/                    # Single-image PEFT study (LoRA, AdaptFormer, Transition Prior)
 │   ├── config/                      # YAML configs for 100%, 50%, and 25% annotation budgets
 │   ├── block_model.py               # DINOv3 block hooks and parallel adapter injection
@@ -187,11 +188,14 @@ wheat-phenology-identifier/
 │   ├── audit_image_magnification.py # Read-only SIFT/AKAZE + RANSAC homography magnification audit
 │   ├── verify_all_stations.py       # ExG landmark curve extraction (emergence, heading, harvest)
 │   ├── analyze_details.py           # Flag anomalous curves and label schedule discrepancies
-│   └── detect_shifts.py             # Detect camera rotation, servicing shifts, and wind drift
+│   ├── detect_shifts.py             # Detect camera rotation, servicing shifts, and wind drift
+│   └── xlsx2csv.py                  # Command-line utility to convert XLSX workbooks to CSV
+├── labels/                          # Ground-truth milestone annotations and data tables
+│   ├── labeling_bbch_iso_dates.csv  # Canonical 15-station ground truth milestone dates
+│   ├── labeling_bbch_iso_dates.xlsx # Canonical annotations with field observational notes
+│   └── Fenolojik_Evreler_v3.xlsx    # Initial historical field observation workbook
 ├── docs/                            # Modular technical documentation guides
 ├── archive/                         # Preserved historical experiments (CNN, CNN3D, DINOv2)
-├── labeling_bbch_iso_dates.csv      # Canonical 15-station ground truth milestone dates
-├── labeling_bbch_iso_dates.xlsx     # Canonical annotations with field observational notes
 ├── requirements.txt                 # Core repository Python dependencies
 └── README.md                        # Central repository documentation (this file)
 ```
@@ -260,7 +264,7 @@ Verify that local image paths, harvest years, camera directories (`K1`/`K2`), an
 
 ```bash
 python DINOv3_BBCH/metadata_sanity_check.py \
-  --label-path labeling_bbch_iso_dates.csv \
+  --label-path labels/labeling_bbch_iso_dates.csv \
   --data-path data \
   --camera AUTO \
   --stream micro
@@ -276,7 +280,7 @@ To enable rapid training sweeps over temporal layers, loss formulations, and met
 
 ```bash
 python DINOv3_BBCH/precompute_multiscale_embeddings.py \
-  --label-path labeling_bbch_iso_dates.csv \
+  --label-path labels/labeling_bbch_iso_dates.csv \
   --data-path data \
   --out-dir results_dinov3_bbch_cache \
   --image-backbone facebook/dinov3-vitb16-pretrain-lvd1689m \
@@ -318,7 +322,7 @@ Or execute directly with explicit command-line hyperparameters:
 
 ```bash
 python DINOv3_BBCH/run_multiscale_training.py \
-  --label-path labeling_bbch_iso_dates.csv \
+  --label-path labels/labeling_bbch_iso_dates.csv \
   --data-path data \
   --out-dir results_dinov3_loso \
   --embedding-cache results_dinov3_bbch_cache/vit_embeddings.pt \

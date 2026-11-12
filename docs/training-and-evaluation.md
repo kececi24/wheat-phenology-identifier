@@ -34,7 +34,7 @@ Implemented in [multiscale_phenology.py](../DINOv3_BBCH/multiscale_phenology.py#
 
 ### Leave-One-Station-Out (LOSO) Strategy
 Implemented in [multiscale_phenology.py](../DINOv3_BBCH/multiscale_phenology.py#L894-L934) (`generate_loso_train_val_test_folds`) and activated via `--fold-strategy loso --fold-group-by station`:
-1. **Station-Complete Coverage**: Exactly $N$ folds are constructed for $N$ physical stations (15 folds for canonical `labeling_bbch_iso_dates.csv`, 13 for `labeling_truncated3.csv`).
+1. **Station-Complete Coverage**: Exactly $N$ folds are constructed for $N$ physical stations (15 folds for canonical [`labels/labeling_bbch_iso_dates.csv`](../labels/labeling_bbch_iso_dates.csv), 13 for `labeling_truncated3.csv`).
 2. **Single Test Station**: Each fold reserves exactly 1 physical station for final held-out test evaluation. Every station in the dataset is tested exactly once.
 3. **Balanced Validation Rotation**: Validation stations rotate through a deterministic circular ordering. With `--validation-groups 2`:
    $$\text{Val}(k) = \left\{ \text{Stations}[(k + 1) \pmod N], \; \text{Stations}[(k + 2) \pmod N] \right\}$$
