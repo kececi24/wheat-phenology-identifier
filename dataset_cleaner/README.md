@@ -22,6 +22,33 @@ Full operational workflows, command-line arguments, defect detection math, and t
 | `train_image_sorter.py` | Trains 5-fold stratified vision ensemble on verified trusted folders for 1X vs 10X separation | [Tools Guide](../docs/tools-and-workflows.md#magnification-sorting-ensemble) |
 | `image_prediction_sorter.py` | Audits candidate folders and safely moves verified misfiled images to sibling directories | [Tools Guide](../docs/tools-and-workflows.md#magnification-sorting-ensemble) |
 | `config.yaml` | Configuration for trusted folders, ensemble architectures, and voting thresholds | [Tools Guide](../docs/tools-and-workflows.md#magnification-sorting-ensemble) |
+| `image_viewer.py` | Localhost viewer for manual image review and immediate folder moves | Instructions below |
+
+## Manual image review on a remote machine
+
+Run the viewer on the machine holding the dataset, from the repository root in the project Python environment. The input can be a station folder or a dataset root containing station folders.
+
+```bash
+python -m dataset_cleaner.image_viewer /path/to/data --port 8765
+```
+
+The server binds to `127.0.0.1`. To access it from your computer, run this command on your computer and keep the SSH session open. Replace `user@remote-host` with your SSH destination.
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 user@remote-host
+```
+
+Open `http://127.0.0.1:8765` in your local browser. If local port 8765 is occupied, use `-L 8766:127.0.0.1:8765` and open local port 8766. VS Code Remote SSH users can also forward remote port 8765 through the Ports panel.
+
+The page displays one image and its relative path, which includes the filename. Use Previous and Next to browse. The Folder field selects a folder within the configured root, such as `01.01/2015/K1/1X`, and Load folder refreshes the selection. Use `.` for the whole configured root. Quarantine directories are excluded.
+
+The move buttons execute immediately on the machine running Python. Send to bad_images preserves the path inside the station, for example moving `01.01/2015/K1/1X/photo.jpeg` to `01.01/bad_images/2015/K1/1X/photo.jpeg`. Move to 1X and Move to 10X move between sibling magnification folders under the same camera. Every move preserves the filename, and occupied destinations or changed source files produce an error. A completed move advances to the next image in the review list. Reload the folder to include relocated magnification images again.
+
+Previews are resized in memory for browser display. A missing JPEG end marker can be supplied in memory for preview decoding. Source image bytes are preserved during viewing. Files that cannot be previewed can still be quarantined using the button. Stop the server with Ctrl+C.
+
+Direct moves suit interactive review because each decision takes effect immediately. The magnification model's CSV audit and apply commands remain available for reviewing a batch of proposed changes before execution.
+
+## Automated image quality cleaning
 
 Scan a station folder or a dataset root containing station folders. Folder scans print the detected bad images with their reasons and a summary.
 

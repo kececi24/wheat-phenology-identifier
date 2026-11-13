@@ -202,6 +202,11 @@ def station_folders(folder):
 
 def move_bad_image(source, station, fingerprint):
     destination = station / "bad_images" / source.relative_to(station)
+    move_image(source, destination, fingerprint)
+    return destination
+
+
+def move_image(source, destination, fingerprint):
     if source.resolve() != source or destination.resolve() != destination:
         raise ValueError("Source or destination is redirected")
     stat = source.stat()
@@ -214,7 +219,12 @@ def move_bad_image(source, station, fingerprint):
         source.rename(destination)
     else:
         os.link(source, destination)
-        source.unlink()
+        try:
+            source.unlink()
+        except OSError:
+            if destination.exists() and os.path.samestat(stat, destination.stat()):
+                destination.unlink()
+            raise
     return destination
 
 

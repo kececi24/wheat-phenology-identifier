@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dataset image viewer</title>
+<style>
+body { margin: 12px; font: 14px system-ui, sans-serif; }
+form, nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+input { min-width: 260px; }
+button, input { padding: 6px; }
+#name { overflow-wrap: anywhere; margin: 8px 0; }
+#image { display: block; max-width: 100%; max-height: 76vh; object-fit: contain; }
+#image[hidden] { display: none; }
+#message { min-height: 20px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<form id="folder-form">
+<label>Folder <input id="folder" value="." placeholder="Station or subfolder within the dataset"></label>
+<button id="load" type="submit">Load folder</button>
+<span id="root"></span>
+</form>
+<nav aria-label="Image controls">
+<button id="previous" type="button" disabled>Previous</button>
+<button id="next" type="button" disabled>Next</button>
+<span id="position">0 / 0</span>
+<button id="bad" type="button" disabled>Send to bad_images</button>
+<button id="one" type="button" disabled>Move to 1X</button>
+<button id="ten" type="button" disabled>Move to 10X</button>
+</nav>
+<div id="name"></div>
+<img id="image" alt="" hidden>
+<p id="message" role="status"></p>
+<script>
+const token = "__VIEWER_TOKEN__";
+const element = id => document.getElementById(id);
+let images = [];
+let index = 0;
+let busy = false;
+
+function controls() {
+  const current = images[index];
+  element("load").disabled = busy;
+  element("folder").disabled = busy;
+  element("previous").disabled = busy || index === 0 || !current;
+  element("next").disabled = busy || index >= images.length - 1 || !current;
+  element("bad").disabled = busy || !current;
+  element("one").disabled = busy || !current || current.magnification !== "10X";
+  element("ten").disabled = busy || !current || current.magnification !== "1X";
+}
+
+function display() {
+  const current = images[index];
+  element("position").textContent = images.length ? (index + 1) + " / " + images.length : "0 / 0";
+  element("name").textContent = current ? current.path : "No images in this folder.";
+  element("image").hidden = !current;
+  if (current) {
+    element("image").alt = current.name;
+    element("image").src = "/image?id=" + encodeURIComponent(current.id);
+  } else {
+    element("image").removeAttribute("src");
+  }
+  controls();
+}
+
+async function request(url, options) {
+  const response = await fetch(url, options);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || response.statusText);
+  return body;
+}
+
+async function loadFolder(event) {
+  if (event) event.preventDefault();
+  if (busy) return;
+  busy = true;
+  controls();
+  element("message").textContent = "Loading images…";
+  try {
+    const body = await request("/api/images?folder=" + encodeURIComponent(element("folder").value || "."));
+    images = body.images;
+    index = 0;
+    element("root").textContent = body.root;
+    element("message").textContent = "";
+    display();
+  } catch (error) {
+    element("message").textContent = error.message;
+  } finally {
+    busy = false;
+    controls();
+  }
+}
+
+async function move(action) {
+  if (busy || !images[index]) return;
+  busy = true;
+  controls();
+  element("message").textContent = "Moving image…";
+  try {
+    const body = await request("/api/move", {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "X-Viewer-Token": token},
+      body: JSON.stringify({id: images[index].id, action})
+    });
+    images.splice(index, 1);
+    index = Math.max(0, Math.min(index, images.length - 1));
+    display();
+    element("message").textContent = "Moved to " + body.destination;
+  } catch (error) {
+    element("message").textContent = error.message;
+  } finally {
+    busy = false;
+    controls();
+  }
+}
+
+element("folder-form").addEventListener("submit", loadFolder);
+element("previous").onclick = () => { if (index > 0) { index--; element("message").textContent = ""; display(); } };
+element("next").onclick = () => { if (index < images.length - 1) { index++; element("message").textContent = ""; display(); } };
+element("bad").onclick = () => move("bad");
+element("one").onclick = () => move("1X");
+element("ten").onclick = () => move("10X");
+element("image").onerror = () => {
+  if (images[index]) element("message").textContent = "Preview unavailable. You can still move this file or continue.";
+};
+loadFolder();
+</script>
+</body>
+</html>
