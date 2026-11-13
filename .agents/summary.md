@@ -50,8 +50,8 @@ The strongest tested approach is:
 
 Canonical label files:
 
-- `labeling_bbch_iso_dates.csv`
-- `labeling_bbch_iso_dates.xlsx`
+- `labels/labeling_bbch_iso_dates.csv`
+- `labels/labeling_bbch_iso_dates.xlsx`
 
 The model derives intervals from these milestone columns:
 

@@ -135,7 +135,7 @@ python scripts/audit_image_magnification.py \
 Field cameras undergo seasonal maintenance, battery outages, and perspective drift. Several utility scripts in `scripts/` audit temporal trajectories and physical camera integrity.
 
 ### 1. Excess Green Landmark Verification: `verify_all_stations.py`
-[scripts/verify_all_stations.py](../scripts/verify_all_stations.py) parses [labeling_bbch_iso_dates.csv](../labeling_bbch_iso_dates.csv), discovers 10X images in `[1-Sowing, 8 - Harvest]`, and calculates the **Excess Green Index (ExG)** in parallel across the lower half of each image (region of interest for wheat canopy):
+[scripts/verify_all_stations.py](../scripts/verify_all_stations.py) parses [labeling_bbch_iso_dates.csv](../labels/labeling_bbch_iso_dates.csv), discovers 10X images in `[1-Sowing, 8 - Harvest]`, and calculates the **Excess Green Index (ExG)** in parallel across the lower half of each image (region of interest for wheat canopy):
 
 $$\text{ExG} = 2g - r - b, \quad \text{where } r = \frac{R}{R+G+B}, \quad g = \frac{G}{R+G+B}, \quad b = \frac{B}{R+G+B}$$
 
@@ -158,10 +158,12 @@ It extracts biological landmarks from the resulting seasonal curve:
 ### 4. Verification Summary: `summarize_all_verifications.py`
 [scripts/summarize_all_verifications.py](../scripts/summarize_all_verifications.py) compiles station verification metrics into `all_stations_verification_summary.csv`, recording image counts, peak ExG values, curve quality, and landmark offset errors.
 
-### 5. Station Batch Utilities
-- `scripts/Rename-Camera.ps1`: Interactive PowerShell tool to preview and rename camera tokens (`K1_TO_K2` or `K2_TO_K1`).
-- `scripts/Rename-Magnification.ps1`: Interactive tool to preview and rename zoom tokens (`10X_TO_1X` or `1X_TO_10X`).
-- `scripts/check_folders.py`: Quick verification that 10X directories exist for each season in the label table.
+### 5. Station Folder and Remote Sync Utilities
+- [`scripts/check_folders.py`](../scripts/check_folders.py): Quick verification that 10X directories exist for each season in the label table.
+- [`scripts/xlsx2csv.py`](../scripts/xlsx2csv.py): Command-line utility to convert multi-sheet `.xlsx` workbooks into UTF-8 CSV tables.
+- [`scripts/upload_drive.py`](../scripts/upload_drive.py): Google Drive automated cloud backup and sync utility using OAuth client credentials.
+- [`scripts/Rename-Camera.ps1`](../scripts/Rename-Camera.ps1): Interactive PowerShell tool to preview and rename camera tokens (`K1_TO_K2` or `K2_TO_K1`).
+- [`scripts/Rename-Magnification.ps1`](../scripts/Rename-Magnification.ps1): Interactive tool to preview and rename zoom tokens (`10X_TO_1X` or `1X_TO_10X`).
 
 ---
 
@@ -290,6 +292,7 @@ Top-K Phenology Probabilities   ───> Print predicted BBCH stage and class 
 | :--- | :--- | :--- |
 | `--image-path` | Target day image | Resolves observation date and provides the prediction anchor. |
 | `--image-dir` | Historical folder | Discovers preceding images in the causal temporal window ($W$ days). |
+| `--image-backbone-weights` | Standalone backbone weights | Path to custom backbone checkpoint; loaded via [DINOv3_BBCH/backbone_weights.py](../DINOv3_BBCH/backbone_weights.py). |
 | `--repeat-missing` | Handling gaps | By default, missing intermediate dates are masked (`mask=False`). Supplying this repeats the target image. |
 | `--planting-date` | Calendar anchor | Calculates days-since-sowing for the calendar gated MLP. |
 | `--weather-cache` | Weather data | Reads Meteostat observations and computes normalized cumulative GDD. |

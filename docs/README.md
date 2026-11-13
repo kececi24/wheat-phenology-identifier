@@ -48,10 +48,12 @@ wheat-phenology-identifier/
 │   └── run_linear_training.py # Single-day fine-tuning and evaluation runner
 ├── dataset_cleaner/         # Data inspection, bad image filtering, and reorganization tools
 ├── scripts/                 # Maintenance scripts (e.g., SIFT/RANSAC magnification audit)
+├── labels/                  # Ground-truth phenological milestone annotations and data tables
+│   ├── labeling_bbch_iso_dates.csv # Canonical 15-station BBCH milestone date annotations
+│   ├── labeling_bbch_iso_dates.xlsx# Excel source with milestone dates and field notes
+│   └── Fenolojik_Evreler_v3.xlsx   # Initial historical field observation workbook
 ├── docs/                    # Modular documentation guides (this directory)
 ├── archive/                 # Preserved historical experiments (CNN, CNN3D, DINOv2, ViT)
-├── labeling_bbch_iso_dates.csv # Canonical 15-station BBCH milestone date annotations
-└── labeling_bbch_iso_dates.xlsx# Excel source with milestone dates and field notes
 ```
 
 ---
@@ -81,7 +83,7 @@ Before running precomputations or training, verify that image paths, timestamps,
 
 ```bash
 python DINOv3_BBCH/metadata_sanity_check.py \
-  --label-path labeling_bbch_iso_dates.csv \
+  --label-path labels/labeling_bbch_iso_dates.csv \
   --data-path data \
   --camera AUTO \
   --stream micro
@@ -95,7 +97,7 @@ For fast temporal Transformer training, precompute dense patch and tile descript
 
 ```bash
 python DINOv3_BBCH/precompute_multiscale_embeddings.py \
-  --label-path labeling_bbch_iso_dates.csv \
+  --label-path labels/labeling_bbch_iso_dates.csv \
   --data-path data \
   --out-dir results_dinov3_bbch_cache \
   --image-backbone facebook/dinov3-vitb16-pretrain-lvd1689m \

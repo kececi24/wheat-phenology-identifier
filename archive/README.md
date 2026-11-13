@@ -28,3 +28,12 @@ A comprehensive comparative retrospective and evolutionary analysis of these arc
 | `DINOv2/` | Initial DINOv2 exploration with legacy label mapping | Earliest foundation model prototype | [Baselines Guide](../docs/baselines-and-adapters.md#historical-dinov2-pipeline-archivedinov2_bbch-variants) |
 | `ViT2/`, `ViT3/` | Early Vision Transformer (DeiT/ViT) prototypes | Early Transformer exploration before foundation DINO | [Baselines Guide](../docs/baselines-and-adapters.md#4-historical-pipeline-comparisons-archive) |
 | `old/VTMM/` | Multiscale vision and temporal prototype | Legacy research prototype | [Baselines Guide](../docs/baselines-and-adapters.md#4-historical-pipeline-comparisons-archive) |
+
+## Archived Data and Report Artifacts
+
+| File | Description | Documentation Reference |
+| :--- | :--- | :--- |
+| `bad_images_report.csv` | Initial dataset quality inspection report recording blurred, dark, and defective frames | [Tools Guide](../docs/tools-and-workflows.md#1-dataset-quality-cleaning-and-repair-dataset_cleaner) |
+| `labeling.xlsx` | Intermediate historical labeling table with serial date formats | [Dataset Guide](../docs/dataset-and-preprocessing.md#5-iso-label-files-and-metadata-schema) |
+| `labeling_iso_dates.xlsx`, `labeling_iso_dates_new.xlsx` | Earlier iteration workbooks preceding final canonical 15-station ISO table | [Dataset Guide](../docs/dataset-and-preprocessing.md#5-iso-label-files-and-metadata-schema) |
+| `labeling_iso_dates.csv` | Early draft ISO date table with formula evaluation references | [Dataset Guide](../docs/dataset-and-preprocessing.md#5-iso-label-files-and-metadata-schema) |

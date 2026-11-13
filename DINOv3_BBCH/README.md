@@ -25,5 +25,7 @@ Comprehensive architecture, training, and operational documentation is centraliz
 | `finetuned_loso_runner.py` | Multi-stage LOSO orchestration (fine-tune -> cache -> train) | [Training Guide](../docs/training-and-evaluation.md#automated-3-stage-pipeline-per-fold) |
 | `run_finetuned_loso.sh` | Shell launcher for automated LOSO experiment sweeps | [Training Guide](../docs/training-and-evaluation.md#automated-3-stage-pipeline-per-fold) |
 | `infer_cached_window.py` | Causal deployment inference from historical image sequence | [Tools Guide](../docs/tools-and-workflows.md#2-realistic-cached-window-causal-deployment-infer_cached_windowpy) |
-| `metadata_sanity_check.py` | Station coverage, date interval, and camera availability auditor | [Tools Guide](../docs/tools-and-workflows.md) |
+| `infer_single_image.py` | Diagnostic single-image inference utility with repeated temporal frames | [Tools Guide](../docs/tools-and-workflows.md#1-single-image-diagnostic-inference-infer_single_imagepy) |
+| `metadata_sanity_check.py` | Station coverage, date interval, and camera availability auditor | [Dataset Guide](../docs/dataset-and-preprocessing.md#8-metadata-sanity-checking-workflow) |
+| `backbone_weights.py` | Standalone image-backbone state dict loader and architecture config inference | [Tools Guide](../docs/tools-and-workflows.md#2-realistic-cached-window-causal-deployment-infer_cached_windowpy) |
 | `configs/` | Flat YAML configuration files for standard and LOSO training | [Training Guide](../docs/training-and-evaluation.md) |
