@@ -22,8 +22,8 @@ button, input { padding: 6px; }
 <span id="root"></span>
 </form>
 <nav aria-label="Image controls">
-<button id="previous" type="button" disabled>Previous</button>
-<button id="next" type="button" disabled>Next</button>
+<button id="previous" type="button" aria-keyshortcuts="ArrowLeft" disabled>Previous</button>
+<button id="next" type="button" aria-keyshortcuts="ArrowRight" disabled>Next</button>
 <span id="position">0 / 0</span>
 <button id="bad" type="button" disabled>Send to bad_images</button>
 <button id="one" type="button" disabled>Move to 1X</button>
@@ -118,6 +118,14 @@ async function move(action) {
 element("folder-form").addEventListener("submit", loadFolder);
 element("previous").onclick = () => { if (index > 0) { index--; element("message").textContent = ""; display(); } };
 element("next").onclick = () => { if (index < images.length - 1) { index++; element("message").textContent = ""; display(); } };
+document.addEventListener("keydown", event => {
+  if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+      || event.target.closest("input, textarea, select") || event.target.isContentEditable) return;
+  const buttonId = {ArrowLeft: "previous", ArrowRight: "next"}[event.key];
+  if (!buttonId) return;
+  event.preventDefault();
+  element(buttonId).click();
+});
 element("bad").onclick = () => move("bad");
 element("one").onclick = () => move("1X");
 element("ten").onclick = () => move("10X");

@@ -40,7 +40,7 @@ ssh -N -L 8765:127.0.0.1:8765 user@remote-host
 
 Open `http://127.0.0.1:8765` in your local browser. If local port 8765 is occupied, use `-L 8766:127.0.0.1:8765` and open local port 8766. VS Code Remote SSH users can also forward remote port 8765 through the Ports panel.
 
-The page displays one image and its relative path, which includes the filename. Use Previous and Next to browse. The Folder field selects a folder within the configured root, such as `01.01/2015/K1/1X`, and Load folder refreshes the selection. Use `.` for the whole configured root. Quarantine directories are excluded.
+The page displays one image and its relative path, which includes the filename. Use Previous and Next or the left and right arrow keys to browse. Arrow shortcuts are inactive while editing the Folder field or while a request is running. The Folder field selects a folder within the configured root, such as `01.01/2015/K1/1X`, and Load folder refreshes the selection. Use `.` for the whole configured root. Quarantine directories are excluded.
 
 The move buttons execute immediately on the machine running Python. Send to bad_images preserves the path inside the station, for example moving `01.01/2015/K1/1X/photo.jpeg` to `01.01/bad_images/2015/K1/1X/photo.jpeg`. Move to 1X and Move to 10X move between sibling magnification folders under the same camera. Every move preserves the filename, and occupied destinations or changed source files produce an error. A completed move advances to the next image in the review list. Reload the folder to include relocated magnification images again.
 
