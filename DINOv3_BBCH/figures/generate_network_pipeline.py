@@ -10,9 +10,11 @@ import numpy as np
 from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch, Rectangle
 
 
-ROOT = Path(__file__).resolve().parent
-PNG_PATH = ROOT / "dinov3_bbch_network_pipeline.png"
-PDF_PATH = ROOT / "dinov3_bbch_network_pipeline.pdf"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DOCS_FIG = REPO_ROOT / "docs" / "figures"
+DOCS_FIG.mkdir(parents=True, exist_ok=True)
+PNG_PATH = DOCS_FIG / "dinov3_bbch_network_pipeline.png"
+PDF_PATH = DOCS_FIG / "dinov3_bbch_network_pipeline.pdf"
 
 INK = "#24323D"
 MUTED = "#5C6973"
