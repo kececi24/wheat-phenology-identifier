@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
+from os.path import samestat
 from pathlib import Path
 import secrets
 from threading import RLock
@@ -29,12 +30,19 @@ class ReviewImage:
     fingerprint: tuple
 
 
+def camera_folder(path):
+    if path.parent.name in {"1X", "10X"} and path.parent.parent.name in {"K1", "K2"}:
+        return path.parent.parent
+    return None
+
+
 class Viewer:
     def __init__(self, root):
         self.root = root.resolve()
         self.token = secrets.token_urlsafe(32)
         self.images = {}
         self.paths = {}
+        self.last_move = None
         self.lock = RLock()
 
     def selected_folder(self, name):
@@ -67,10 +75,12 @@ class Viewer:
                         identifier = secrets.token_urlsafe(18)
                         self.paths[path] = identifier
                         self.images[identifier] = ReviewImage(path, station, fingerprint)
+                    camera = camera_folder(path)
                     result.append({
                         "id": identifier, "name": path.name,
                         "path": path.relative_to(self.root).as_posix(),
                         "magnification": path.parent.name if path.parent.name in {"1X", "10X"} else "",
+                        "camera": camera.name if camera and station in camera.parents else "",
                     })
         return result
 
@@ -104,6 +114,7 @@ class Viewer:
     def move(self, identifier, action):
         with self.lock:
             image = self.current(identifier)
+            original_stat = image.path.stat()
             if action == "bad":
                 destination = move_bad_image(image.path, image.station, image.fingerprint)
             elif action in {"1X", "10X"}:
@@ -114,11 +125,34 @@ class Viewer:
                 destination = image.path.parent.with_name(action) / image.path.name
                 destination.relative_to(self.root)
                 move_image(image.path, destination, image.fingerprint)
+            elif action in {"K1", "K2"}:
+                camera = camera_folder(image.path)
+                if camera is None or image.station not in camera.parents:
+                    raise ValueError("Camera moves require a K1 or K2 folder above the magnification folder")
+                if camera.name == action:
+                    raise ValueError(f"Image is already in {action}")
+                destination = camera.with_name(action) / image.path.relative_to(camera)
+                move_image(image.path, destination, image.fingerprint)
             else:
                 raise ValueError("Unknown move action")
             del self.images[identifier]
             del self.paths[image.path]
+            self.last_move = (identifier, image, destination, original_stat)
             return destination.relative_to(self.root).as_posix()
+
+    def undo(self, identifier):
+        with self.lock:
+            if self.last_move is None or self.last_move[0] != identifier:
+                raise ValueError("This move is no longer the last action")
+            _, image, destination, original_stat = self.last_move
+            if not samestat(original_stat, destination.stat()):
+                raise ValueError("The moved file has been replaced")
+            move_image(destination, image.path, image.fingerprint)
+            preview_id = self.paths.pop(destination, None)
+            if preview_id is not None:
+                del self.images[preview_id]
+            self.last_move = None
+            return image.path.relative_to(self.root).as_posix()
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
@@ -185,7 +219,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         ):
             self.send_json(403, {"error": "Invalid viewer request"})
             return
-        if self.path != "/api/move":
+        if self.path not in {"/api/move", "/api/undo"}:
             self.send_json(404, {"error": "Unknown endpoint"})
             return
         try:
@@ -196,9 +230,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if not isinstance(request, dict):
                 raise ValueError("Expected a JSON object")
             identifier = request.get("id")
+            if not isinstance(identifier, str):
+                raise ValueError("Expected image id")
+            if self.path == "/api/undo":
+                restored = self.server.viewer.undo(identifier)
+                print(f"Restored image to {restored}", flush=True)
+                self.send_json(200, {"restored": restored})
+                return
             action = request.get("action")
-            if not isinstance(identifier, str) or not isinstance(action, str):
-                raise ValueError("Expected image id and move action")
+            if not isinstance(action, str):
+                raise ValueError("Expected move action")
             destination = self.server.viewer.move(identifier, action)
             print(f"Moved image to {destination}", flush=True)
             self.send_json(200, {"destination": destination})
