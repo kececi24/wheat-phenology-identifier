@@ -1,0 +1,27 @@
+# Run from repository root. CLI flags override these values.
+label_path: labeling_bbch_iso_dates.csv
+data_path: data
+embedding_cache: results_adapter_frozen_cache/vit_embeddings.pt
+out_dir: results_loss_bbch_100
+stream: micro
+camera: AUTO
+transition_days: 2
+ignore_status_csv: false
+fold_id: 0
+validation_groups: 2
+expected_stations: null
+fold_seed: 42
+label_seed: 42
+seed: 42
+methods: [hard_ce, soft_ce, ordinal, transition]
+label_percentage: 100
+hidden_dim: 32
+dropout: 0.2
+lr: 0.001
+weight_decay: 0.0003
+epochs: 200
+patience: 25
+path_weight: 1.0
+device: cpu
+dry_run: false
+

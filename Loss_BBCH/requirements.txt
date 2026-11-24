@@ -1,0 +1,2 @@
+-r ../Adapter_BBCH/requirements.txt
+pytest>=7
