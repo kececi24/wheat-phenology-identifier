@@ -1,20 +1,36 @@
+# Python
 .venv
-.codex_remote_analysis
 __pycache__
-data
-data_new
-demo
-demo/*
-!demo/label_station_year.py
-!demo/STATION_YEAR_LABELING.md
-/paper
-/tests
-/scripts/*.xlsx
-/scripts/*.csv
-.env
-dataset_cleaner/*_model
-temp.*
-results*
-token.json
+
+# Local tools and OS metadata
+.codex_remote_analysis
 .vscode
 .DS_Store
+
+# Local credentials
+.env
+token.json
+
+# Datasets, model files, and experiment outputs
+data
+data_new
+dataset_cleaner/*_model
+results*
+temp.*
+/scripts/*.csv
+/scripts/*.xlsx
+
+# Local paper and test files
+/paper
+/tests
+
+# Demo assets, with two shareable root demo files
+demo
+!/demo
+/demo/*
+!/demo/label_station_year.py
+!/demo/STATION_YEAR_LABELING.md
+
+# Graphify generates local artifacts alongside the shared graph
+/graphify-out/*
+!/graphify-out/graph.json
