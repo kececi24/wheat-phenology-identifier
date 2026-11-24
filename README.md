@@ -184,6 +184,8 @@ wheat-phenology-identifier/
 │   ├── clean_dataset.py             # JPEG repair, corrupt file detection, and side-patch blur filter
 │   ├── train_image_sorter.py        # 5-fold vision ensemble trainer for 1X vs 10X reclassification
 │   └── image_prediction_sorter.py   # Ensemble audit and safe move execution
+├── dataset_review/                  # Localhost gallery for manual dataset review
+├── dataset_files.py                 # Shared dataset traversal and file moves
 ├── scripts/                         # Maintenance and verification scripts
 │   ├── audit_image_magnification.py # Read-only SIFT/AKAZE + RANSAC homography magnification audit
 │   ├── verify_all_stations.py       # ExG landmark curve extraction (emergence, heading, harvest)

@@ -10,6 +10,8 @@ from tempfile import NamedTemporaryFile
 
 import yaml
 
+from dataset_files import move_image, move_without_overwrite
+
 from scripts.audit_image_magnification import (
     IMAGE_EXTENSIONS,
     QUARANTINE_DIRECTORIES,
@@ -174,14 +176,6 @@ def write_audit(report, rows):
     return counts
 
 
-def move_without_overwrite(source, destination):
-    if os.name == "nt":
-        source.rename(destination)  # Windows rename fails if the destination exists.
-    else:
-        os.link(source, destination)  # Exclusive destination creation on POSIX.
-        source.unlink()
-
-
 def apply_move(root, trusted, row):
     relative = Path(row["source"])
     label = stream_label(relative)
@@ -199,13 +193,8 @@ def apply_move(root, trusted, row):
     for path in (source, destination):
         if path.resolve() != path or path.parent in trusted:
             raise ValueError(f"Path is redirected or in a trusted folder: {path}")
-    if os.path.lexists(destination):
-        raise FileExistsError(f"Destination exists: {destination}")
-    stat = source.stat()
-    if not source.is_file() or (stat.st_size, stat.st_mtime_ns) != (int(row["size"]), int(row["mtime_ns"])):
-        raise ValueError("Source changed since the audit")
-    destination.parent.mkdir(exist_ok=True)
-    move_without_overwrite(source, destination)
+    fingerprint = int(row["size"]), int(row["mtime_ns"])
+    move_image(source, destination, fingerprint)
 
 
 def apply_report(root, trusted, report):
