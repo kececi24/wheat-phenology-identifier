@@ -1,10 +1,14 @@
 # Dataset review app
 
-Run the viewer on the machine holding the dataset, from the repository root with Python and Pillow installed. The input can be a station folder or a dataset root containing station folders.
+Run these commands on the machine holding the dataset, from the repository root, with Python and Pillow installed. The input is a station folder or dataset root. Create the admin and individual reviewer accounts before starting the server. Passwords are entered at a prompt.
 
 ```bash
+python -m dataset_review.image_viewer /path/to/data --create-admin admin
+python -m dataset_review.image_viewer /path/to/data --create-reviewer reviewer1
 python -m dataset_review.image_viewer /path/to/data --port 8765
 ```
+
+The default state directory is a hidden sibling named after the dataset, such as `/path/to/.data-review`. Use the same `--state-dir /private/review-state` for account management and server startup if you specify one. The state directory belongs to one dataset root. State stores account and session records in `accounts.sqlite3`. The operator can use `--reset-password USERNAME` or `--disable-user USERNAME`. Both revoke existing sessions. Use one server per dataset and keep its state directory accessible only to the server operator.
 
 Existing launch commands using `python -m dataset_cleaner.image_viewer` also work.
 
@@ -18,10 +22,14 @@ Open `http://127.0.0.1:8765` in your local browser. If local port 8765 is occupi
 
 Choose 1, 4, or 8 images per page. Select an image with its radio button or by clicking its tile, then use the move buttons on that image. Previous and Next and the left and right arrow shortcuts browse one page at a time. Inside form controls, arrow keys use the browser's normal behavior. The Folder field selects a folder within the configured root, such as `01.01/2015/K1/1X`. Use `.` for the whole configured root. Quarantine directories are excluded.
 
-The move buttons execute immediately on the machine running Python. Send to bad_images preserves the path inside the station, for example moving `01.01/2015/K1/1X/photo.jpeg` to `01.01/bad_images/2015/K1/1X/photo.jpeg`. The 1X and 10X buttons change magnification under the same camera. The K1 and K2 buttons change cameras within the same station and year while preserving magnification. Every move preserves the filename. The viewer reports occupied destinations and changed source files.
+Reviewers propose moves to `bad_images`, `1X`, `10X`, `K1`, or `K2`. Each pending tile shows the proposed destination. Reviewers can cancel a proposal from the gallery or **My pending moves**. **Undo last proposal** cancels their newest pending proposal. Outcomes are visible in **My activity**.
 
-Undo last move restores the original path for the most recent successful move, including quarantine. Undo is available in the tab that made the move until the page is refreshed, the server stops, or a newer move succeeds. An occupied original path or a changed moved file prevents restoration.
+Admins use **Approval queue** to preview proposals and apply or reject selected rows. Admin gallery moves take effect immediately. All moves preserve filenames and either change the requested folder or retain the station-relative path inside `bad_images`. Apply checks the source identity and destination before moving. **Undo last move** restores the most recent applied move when the original path is free and the moved file still matches.
 
-Previews are resized in memory for browser display. A missing JPEG end marker can be supplied in memory for preview decoding. Source image bytes are preserved during viewing. Files that cannot be previewed can still be quarantined using the button. Stop the server with Ctrl+C.
+The server stores each user's proposals and outcomes in `actions/<user-id>.json`. A separate `views/<user-id>.jsonl` records the username, UTC timestamp, and relative path for each successful reviewer preview request. The log includes previews with no proposal and repeat requests. In grid mode, the browser may request nearby previews before they scroll into view.
 
-Direct moves suit interactive review because each decision takes effect immediately. The magnification model's CSV audit and apply commands remain available for reviewing a batch of proposed changes before execution.
+For approval to govern dataset changes, give write access to the server operator and keep reviewer SSH access limited to forwarding or otherwise read-only for the dataset. Each reviewer signs in with their own viewer account.
+
+Previews are resized in memory for browser display. A missing JPEG end marker can be supplied in memory for preview decoding. Source image bytes are preserved during viewing. Users can still propose quarantine for files that cannot be previewed. Stop the server with Ctrl+C.
+
+The automated magnification model retains its CSV audit and apply workflow.
