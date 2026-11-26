@@ -22,8 +22,18 @@ import warnings
 import numpy as np
 from PIL import Image
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-QUARANTINE_FOLDERS = {"bad_images", "truncated_images", "corrupt_images"}
+# Keep direct script invocation working from outside the repository.
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from dataset_files import (
+    QUARANTINE_FOLDERS,
+    SUPPORTED_EXTENSIONS,
+    images_in_station,
+    move_bad_image,
+    station_folders,
+)
+
 BLUR_PRESETS = {"conservative": 15.0, "medium": 45.0, "aggressive": 100.0}
 
 LOW_CONTRAST_LIMIT = 3
@@ -164,68 +174,6 @@ def analyze_image(path, blur_threshold=45.0, monochrome=False, local_blur=True, 
         if patches[len(patches) // 4] < threshold or patches[0] < threshold * 0.5:
             return "LOCAL_BLUR", f"Blurred side patches, minimum variance {patches[0]:.1f}"
     return "OK", ""
-
-
-def raise_walk_error(error):
-    raise error
-
-
-def images_in_station(station):
-    for directory, folders, filenames in os.walk(station, onerror=raise_walk_error):
-        parent = Path(directory)
-        folders[:] = sorted(
-            name for name in folders
-            if name.lower() not in QUARANTINE_FOLDERS
-            and (parent / name).resolve() == parent / name
-        )
-        for name in sorted(filenames):
-            path = parent / name
-            if path.suffix.lower() in SUPPORTED_EXTENSIONS and not path.is_symlink():
-                yield path
-
-
-def station_folders(folder):
-    children = sorted(folder.iterdir())
-    # Project stations contain year folders. Direct images also identify a station.
-    if any(
-        (child.is_dir() and len(child.name) == 4 and child.name.isdigit())
-        or (child.is_file() and child.suffix.lower() in SUPPORTED_EXTENSIONS)
-        for child in children
-    ):
-        return [folder]
-    return [
-        child for child in children
-        if child.is_dir() and child.name.lower() not in QUARANTINE_FOLDERS
-        and child.resolve() == child
-    ]
-
-
-def move_bad_image(source, station, fingerprint):
-    destination = station / "bad_images" / source.relative_to(station)
-    move_image(source, destination, fingerprint)
-    return destination
-
-
-def move_image(source, destination, fingerprint):
-    if source.resolve() != source or destination.resolve() != destination:
-        raise ValueError("Source or destination is redirected")
-    stat = source.stat()
-    if not source.is_file() or (stat.st_size, stat.st_mtime_ns) != fingerprint:
-        raise ValueError("Source changed during inspection")
-    if os.path.lexists(destination):
-        raise FileExistsError(f"Destination exists {destination}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if os.name == "nt":
-        source.rename(destination)
-    else:
-        os.link(source, destination)
-        try:
-            source.unlink()
-        except OSError:
-            if destination.exists() and os.path.samestat(stat, destination.stat()):
-                destination.unlink()
-            raise
-    return destination
 
 
 def inspect_task(task, repair_jpeg=False, **options):

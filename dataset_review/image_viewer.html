@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dataset image viewer</title>
+<style>
+body { margin: 12px; font: 14px system-ui, sans-serif; }
+[hidden] { display: none !important; }
+form, nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+#folder { min-width: 260px; }
+button, select, #folder { padding: 6px; }
+#gallery { display: grid; grid-template-columns: repeat(var(--columns, 1), minmax(0, 1fr)); gap: 8px; }
+.tile { border: 2px solid transparent; padding: 4px; overflow-wrap: anywhere; cursor: pointer; }
+.tile:has(input:checked) { border-color: #2684ff; }
+.tile img { display: block; width: 100%; height: 36vh; object-fit: contain; }
+#gallery[data-size="1"] img { height: 76vh; }
+@media (max-width: 700px) {
+  #gallery[data-size="8"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+#message { min-height: 20px; white-space: pre-wrap; }
+.pending { display: block; margin-top: 4px; color: #784700; }
+#actions li { margin-bottom: 12px; overflow-wrap: anywhere; }
+#actions img { display: block; max-width: min(100%, 400px); max-height: 240px; }
+</style>
+</head>
+<body>
+<form id="login" hidden>
+<label>Username <input id="username" autocomplete="username" required></label>
+<label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+<button>Sign in</button>
+</form>
+<main id="workspace" hidden>
+<nav aria-label="Review workspace">
+<span id="account"></span>
+<button id="browse" type="button">Browse images</button>
+<button id="pending" type="button">My pending moves</button>
+<button id="activity" type="button">My activity</button>
+<button id="sign-out" type="button">Sign out</button>
+</nav>
+<section id="review">
+<form id="folder-form">
+<label>Folder <input id="folder" value="." placeholder="Station or subfolder within the dataset"></label>
+<button id="load" type="submit">Load folder</button>
+<span id="root"></span>
+</form>
+<nav aria-label="Image controls">
+<label>Images per page <select id="page-size">
+<option value="1">1</option><option value="4">4</option><option value="8">8</option>
+</select></label>
+<button id="previous" type="button" aria-keyshortcuts="ArrowLeft" disabled>Previous</button>
+<button id="next" type="button" aria-keyshortcuts="ArrowRight" disabled>Next</button>
+<span id="position">0 / 0</span>
+<button id="bad" type="button" disabled>Send to bad_images</button>
+<button id="one" type="button" disabled>Move to 1X</button>
+<button id="ten" type="button" disabled>Move to 10X</button>
+<button id="k1" type="button" disabled>Move to K1</button>
+<button id="k2" type="button" disabled>Move to K2</button>
+<button id="undo" type="button" disabled>Undo last move</button>
+<button id="cancel" type="button" hidden disabled>Cancel proposal</button>
+</nav>
+<div id="gallery" role="group" aria-label="Select an image"></div>
+</section>
+<section id="action-panel" hidden>
+<h2 id="action-title"></h2>
+<button id="apply-selected" type="button" hidden>Apply selected</button>
+<button id="reject-selected" type="button" hidden>Reject selected</button>
+<button id="reload-actions" type="button">Refresh</button>
+<ul id="actions"></ul>
+</section>
+</main>
+<p id="message" role="status"></p>
+<script>
+const element = id => document.getElementById(id);
+let session = null;
+let images = [];
+let index = 0;
+let busy = false;
+let loadedFolder = ".";
+let actions = [];
+let pendingByPath = new Map();
+let panel = "browse";
+const admin = () => session?.role === "admin";
+const pageSize = () => Number(element("page-size").value);
+const pageStart = () => Math.floor(index / pageSize()) * pageSize();
+function lastAction() {
+  if (!admin()) return actions.find(action => action.status === "pending");
+  return actions.filter(action => action.status === "applied")
+    .reduce((latest, action) => !latest || action.applied_at > latest.applied_at ? action : latest, null);
+}
+
+function controls() {
+  const current = images[index];
+  const pending = current && pendingByPath.get(current.path);
+  const unavailable = busy || !current || !!pending;
+  element("load").disabled = busy;
+  element("folder").disabled = busy;
+  element("page-size").disabled = busy;
+  element("previous").disabled = busy || pageStart() === 0 || !current;
+  element("next").disabled = busy || pageStart() + pageSize() >= images.length;
+  element("bad").disabled = unavailable;
+  element("one").disabled = unavailable || current.magnification !== "10X";
+  element("ten").disabled = unavailable || current.magnification !== "1X";
+  element("k1").disabled = unavailable || current.camera !== "K2";
+  element("k2").disabled = unavailable || current.camera !== "K1";
+  element("undo").disabled = busy || !lastAction();
+  element("cancel").hidden = !pending;
+  element("cancel").disabled = busy || !pending;
+  for (const id of ["browse", "pending", "activity", "sign-out", "apply-selected", "reject-selected", "reload-actions"]) {
+    element(id).disabled = busy;
+  }
+  for (const input of element("gallery").querySelectorAll("input")) input.disabled = busy;
+}
+
+function display() {
+  const gallery = element("gallery");
+  const start = pageStart();
+  const size = pageSize();
+  const end = Math.min(start + size, images.length);
+  gallery.dataset.size = size;
+  gallery.style.setProperty("--columns", {1: 1, 4: 2, 8: 4}[size]);
+  gallery.replaceChildren();
+  element("position").textContent = images.length ? (start + 1) + "–" + end + " / " + images.length : "0 / 0";
+  if (!images.length) gallery.textContent = "No images in this folder.";
+  for (let i = start; i < end; i++) {
+    const current = images[i];
+    const tile = document.createElement("label");
+    tile.className = "tile";
+    const select = document.createElement("input");
+    select.type = "radio";
+    select.name = "selected-image";
+    select.checked = i === index;
+    select.onchange = () => { index = i; controls(); };
+    const preview = document.createElement("img");
+    preview.alt = current.name;
+    preview.onerror = () => { preview.alt = "Preview unavailable · " + current.name; };
+    preview.loading = "lazy";
+    preview.src = "/image?id=" + encodeURIComponent(current.id);
+    tile.append(select, document.createTextNode(current.path));
+    const proposal = pendingByPath.get(current.path);
+    if (proposal) {
+      const badge = document.createElement("span");
+      badge.className = "pending";
+      badge.textContent = "Pending → " + proposal.destination;
+      tile.append(badge);
+    }
+    tile.append(preview);
+    gallery.append(tile);
+  }
+  controls();
+}
+
+async function request(url, options) {
+  const response = await fetch(url, options);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || response.statusText);
+  return body;
+}
+
+async function refreshActions() {
+  const body = await request("/api/actions");
+  actions = body.actions;
+  pendingByPath = new Map(actions.filter(action =>
+    !admin() && action.status === "pending"
+  ).map(action => [action.source, action]));
+  element("pending").textContent = (admin() ? "Approval queue" : "My pending moves") +
+    " (" + actions.filter(action => action.status === "pending").length + ")";
+}
+
+async function loadFolder(event) {
+  if (event) event.preventDefault();
+  if (busy) return;
+  busy = true;
+  controls();
+  element("message").textContent = "Loading images…";
+  try {
+    await refreshActions();
+    const folder = element("folder").value || ".";
+    const body = await request("/api/images?folder=" + encodeURIComponent(folder));
+    loadedFolder = folder;
+    images = body.images;
+    index = 0;
+    element("root").textContent = body.root;
+    element("message").textContent = "";
+    display();
+  } catch (error) {
+    element("message").textContent = error.message;
+  } finally {
+    busy = false;
+    controls();
+  }
+}
+
+function post(endpoint, payload) {
+  return request(endpoint, {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-Viewer-Token": session?.csrf || ""},
+    body: JSON.stringify(payload)
+  });
+}
+
+async function move(action) {
+  if (busy || !images[index]) return;
+  busy = true;
+  controls();
+  element("message").textContent = "Moving image…";
+  try {
+    const id = images[index].id;
+    const body = await post("/api/move", {id, action});
+    if (body.status === "applied") {
+      images.splice(index, 1);
+      index = Math.max(0, Math.min(index, images.length - 1));
+    } else if (body.status === "pending") {
+      index = Math.min(index + 1, images.length - 1);
+    }
+    await refreshActions();
+    display();
+    element("message").textContent = body.error || (body.status === "pending" ? "Proposed move to " : "Moved to ") + body.destination;
+  } catch (error) {
+    element("message").textContent = error.message;
+  } finally {
+    busy = false;
+    controls();
+  }
+}
+
+async function undo() {
+  const action = lastAction();
+  if (busy || !action) return;
+  busy = true;
+  controls();
+  element("message").textContent = "Restoring image…";
+  try {
+    const result = await post("/api/undo", {id: action.id});
+    await refreshActions();
+    element("message").textContent = result.error || (admin() ? "Restored " + result.source : "Proposal cancelled");
+    try {
+      const body = await request("/api/images?folder=" + encodeURIComponent(loadedFolder));
+      images = body.images;
+      const restoredIndex = images.findIndex(image => image.path === result.source);
+      index = restoredIndex >= 0 ? restoredIndex : Math.max(0, Math.min(index, images.length - 1));
+      display();
+    } catch (error) {
+      element("message").textContent += ". Reload the folder to refresh the list. " + error.message;
+    }
+  } catch (error) {
+    element("message").textContent = error.message;
+  } finally {
+    busy = false;
+    controls();
+  }
+}
+
+async function decide(ids, decision) {
+  if (busy || !ids.length) return;
+  busy = true;
+  controls();
+  const results = [];
+  try {
+    for (const id of ids) {
+      try {
+        const result = await post("/api/decision", {id, decision});
+        results.push(result.error || result.status);
+      } catch (error) {
+        results.push(error.message);
+      }
+    }
+    element("message").textContent = results.join(" · ");
+    await refreshActions();
+    if (panel === "browse") display();
+    else renderActions();
+  } catch (error) {
+    element("message").textContent = error.message;
+  } finally {
+    busy = false;
+    controls();
+  }
+}
+
+function renderActions() {
+  const pending = panel === "pending";
+  const list = element("actions");
+  list.replaceChildren();
+  element("action-title").textContent = pending ? (admin() ? "Approval queue" : "My pending moves") : (admin() ? "Action history" : "My activity");
+  element("apply-selected").hidden = element("reject-selected").hidden = !pending || !admin();
+  const records = actions.filter(action => (action.status === "pending") === pending);
+  for (const action of records) {
+    const row = document.createElement("li");
+    const labels = {pending: "Pending", applied: "Applied", rejected: "Rejected", failed: "Couldn’t apply", cancelled: "Cancelled", reverted: "Reverted"};
+    const text = document.createTextNode(
+      (admin() ? action.reviewer + " · " : "") + (labels[action.status] || action.status) +
+      " · " + action.source + " → " + action.destination + (action.error ? " · " + action.error : "")
+    );
+    if (pending && admin()) {
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.value = action.id;
+      const label = document.createElement("label");
+      label.append(check, text);
+      const preview = document.createElement("button");
+      preview.type = "button";
+      preview.textContent = "Preview";
+      preview.onclick = () => {
+        const image = document.createElement("img");
+        image.alt = action.source;
+        image.src = "/image?proposal=" + encodeURIComponent(action.id);
+        preview.replaceWith(image);
+      };
+      row.append(label, " ", preview);
+    } else {
+      row.append(text);
+      if (pending) {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.textContent = "Cancel proposal";
+        cancel.onclick = () => decide([action.id], "cancel");
+        row.append(" ", cancel);
+      }
+    }
+    list.append(row);
+  }
+  if (!records.length) {
+    const empty = document.createElement("li");
+    empty.textContent = pending ? "No pending moves." : "No completed actions.";
+    list.append(empty);
+  }
+}
+
+async function showPanel(name) {
+  if (busy) return;
+  panel = name;
+  element("review").hidden = name !== "browse";
+  element("action-panel").hidden = name === "browse";
+  if (name === "browse") {
+    element("folder").value = loadedFolder;
+    await loadFolder();
+    return;
+  }
+  busy = true;
+  controls();
+  try {
+    await refreshActions();
+    renderActions();
+  } catch (error) {
+    element("message").textContent = error.message;
+  } finally {
+    busy = false;
+    controls();
+  }
+}
+
+function selectedActions() {
+  return Array.from(element("actions").querySelectorAll("input:checked"), input => input.value);
+}
+
+async function start() {
+  try {
+    session = await request("/api/session");
+    element("login").hidden = true;
+    element("workspace").hidden = false;
+    element("account").textContent = session.username + " · " + session.role;
+    element("activity").textContent = admin() ? "Action history" : "My activity";
+    element("undo").textContent = admin() ? "Undo last move" : "Undo last proposal";
+    if (!admin()) {
+      element("bad").textContent = "Propose bad_images move";
+      for (const [id, label] of Object.entries({one: "1X", ten: "10X", k1: "K1", k2: "K2"})) {
+        element(id).textContent = "Propose move to " + label;
+      }
+    }
+    await loadFolder();
+  } catch (error) {
+    element("login").hidden = false;
+  }
+}
+
+element("login").onsubmit = async event => {
+  event.preventDefault();
+  const button = element("login").querySelector("button");
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    await post("/api/login", {username: element("username").value, password: element("password").value});
+    element("message").textContent = "";
+    await start();
+  } catch (error) {
+    element("message").textContent = error.message;
+  } finally {
+    element("password").value = "";
+    button.disabled = false;
+  }
+};
+element("sign-out").onclick = async () => {
+  try {
+    await post("/api/logout", {});
+    location.reload();
+  } catch (error) {
+    element("message").textContent = error.message;
+  }
+};
+element("browse").onclick = () => showPanel("browse");
+element("pending").onclick = () => showPanel("pending");
+element("activity").onclick = () => showPanel("activity");
+element("reload-actions").onclick = () => showPanel(panel);
+element("apply-selected").onclick = () => decide(selectedActions(), "apply");
+element("reject-selected").onclick = () => decide(selectedActions(), "reject");
+element("cancel").onclick = () => {
+  const proposal = pendingByPath.get(images[index]?.path);
+  if (proposal) decide([proposal.id], "cancel");
+};
+
+function navigate(direction) {
+  index = pageStart() + direction * pageSize();
+  element("message").textContent = "";
+  display();
+}
+
+element("folder-form").addEventListener("submit", loadFolder);
+element("page-size").onchange = display;
+element("previous").onclick = () => navigate(-1);
+element("next").onclick = () => navigate(1);
+document.addEventListener("keydown", event => {
+  if (!session || panel !== "browse" || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+      || event.target.closest("input, textarea, select") || event.target.isContentEditable) return;
+  const buttonId = {ArrowLeft: "previous", ArrowRight: "next"}[event.key];
+  if (!buttonId) return;
+  event.preventDefault();
+  element(buttonId).click();
+});
+element("bad").onclick = () => move("bad");
+element("one").onclick = () => move("1X");
+element("ten").onclick = () => move("10X");
+element("k1").onclick = () => move("K1");
+element("k2").onclick = () => move("K2");
+element("undo").onclick = undo;
+start();
+</script>
+</body>
+</html>
